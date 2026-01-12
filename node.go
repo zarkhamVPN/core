@@ -81,3 +81,27 @@ func (n *ZarkhamNode) Status() p2p.NodeStatus {
 	if n.p2p == nil { return p2p.NodeStatus{IsRunning: false} }
 	return n.p2p.Status()
 }
+
+// --- GUI API Bridges ---
+
+func (n *ZarkhamNode) GetWardens(ctx context.Context) ([]*solana.Warden, error) {
+	if n.solana == nil { return nil, fmt.Errorf("solana client not initialized") }
+	return n.solana.FetchAllWardens()
+}
+
+func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden, error) {
+	if n.solana == nil { return false, nil, fmt.Errorf("solana client not initialized") }
+	registered, err := n.solana.IsWardenRegistered()
+	if err != nil || !registered {
+		return false, nil, err
+	}
+	warden, err := n.solana.FetchWardenAccount()
+	return true, warden, err
+}
+
+func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddr string) error {
+	if n.p2p == nil {
+		return fmt.Errorf("P2P manager not initialized")
+	}
+	return n.p2p.Connect(ctx, multiaddr)
+}
