@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"log"
 
-	"zarkham/core/solana"
 	"zarkham/core/vpn"
 
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/multiformats/go-multiaddr"
-	"golang.zx2c4.com/wireguard/wgtypes"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // RequestTunnel initiates the VPN handshake with a remote Warden.

@@ -9,6 +9,9 @@ import (
 	"zarkham/core/p2p"
 	"zarkham/core/solana"
 	"zarkham/core/storage"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 type Config struct {
@@ -98,12 +101,6 @@ func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden
 	warden, err := n.solana.FetchWardenAccount()
 	return true, warden, err
 }
-
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/multiformats/go-multiaddr"
-)
-
-// ...
 
 func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) error {
 	if n.p2p == nil {
