@@ -9,7 +9,6 @@ import (
 	"zarkham/core/p2p"
 	"zarkham/core/solana"
 	"zarkham/core/storage"
-	solanago "github.com/gagliardetto/solana-go"
 )
 
 type Config struct {
