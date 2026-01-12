@@ -67,6 +67,11 @@ func (m *Manager) Start(ctx context.Context, listenIP string) error {
 	}
 	m.host = h
 
+	if err := m.setupDiscovery(); err != nil {
+		h.Close()
+		return err
+	}
+
 	m.isRunning = true
 	log.Println("Zarkham P2P Host started:", h.ID().String())
 	return nil
