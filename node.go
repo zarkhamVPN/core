@@ -99,9 +99,38 @@ func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden
 	return true, warden, err
 }
 
-func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddr string) error {
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
+)
+
+// ...
+
+func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) error {
 	if n.p2p == nil {
 		return fmt.Errorf("P2P manager not initialized")
 	}
-	return n.p2p.Connect(ctx, multiaddr)
+
+	// 1. Parse Multiaddr
+	ma, err := multiaddr.NewMultiaddr(multiaddrStr)
+	if err != nil {
+		return fmt.Errorf("invalid multiaddr: %w", err)
+	}
+	
+	info, err := peer.AddrInfoFromP2pAddr(ma)
+	if err != nil {
+		return fmt.Errorf("failed to get peer info: %w", err)
+	}
+
+	// 2. Libp2p Connect
+	if err := n.p2p.Connect(ctx, multiaddrStr); err != nil {
+		return fmt.Errorf("libp2p connect failed: %w", err)
+	}
+
+	// 3. Request VPN Tunnel
+	seekerAuth := n.solana.Signer.PublicKey().String()
+	if err := n.p2p.RequestTunnel(ctx, info.ID, seekerAuth); err != nil {
+		return fmt.Errorf("vpn tunnel handshake failed: %w", err)
+	}
+
+	return nil
 }
