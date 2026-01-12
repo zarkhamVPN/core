@@ -4,12 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 
 	"zarkham/core/solana"
 	"zarkham/core/vpn"
 
-	"github.com/gagliardetto/solana-go"
+	solanago "github.com/gagliardetto/solana-go"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/multiformats/go-multiaddr"
@@ -46,7 +45,7 @@ func (m *Manager) handleKeyExchange(s network.Stream, sc *solana.Client) {
 		return
 	}
 
-	seekerAuthority, err := solana.PublicKeyFromBase58(req.SeekerAuthority)
+	seekerAuthority, err := solanago.PublicKeyFromBase58(req.SeekerAuthority)
 	if err != nil {
 		log.Printf("VPN: Invalid authority: %v", err)
 		return
@@ -148,7 +147,6 @@ func (m *Manager) handleKeyExchange(s network.Stream, sc *solana.Client) {
 }
 
 func (m *Manager) handleBandwidth(s network.Stream, sc *solana.Client) {
-	// Seeker signs bandwidth claims from Warden
 }
 
 func pingHandler(s network.Stream) {
