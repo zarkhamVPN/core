@@ -14,6 +14,7 @@ import (
 	solanago "github.com/gagliardetto/solana-go"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	manet "github.com/multiformats/go-multiaddr-net"
 )
 
 type Config struct {
@@ -35,10 +36,14 @@ type ZarkhamNode struct {
 
 func NewZarkhamNode(cfg Config) (*ZarkhamNode, error) {
 	ws, err := storage.NewWalletStorage(cfg.ConfigDir)
-	if err != nil { return nil, err }
-	
+	if err != nil {
+		return nil, err
+	}
+
 	is, err := storage.NewIdentityStorage(cfg.ConfigDir)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 
 	return &ZarkhamNode{
 		config: cfg,
@@ -67,12 +72,16 @@ func (n *ZarkhamNode) Start(ctx context.Context, profile string) error {
 
 	// 2. Initialize Solana Client
 	sc, err := solana.NewClient(n.config.RpcEndpoint, pk)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	n.solana = sc
 
 	// 3. Initialize P2P Manager
 	pm := p2p.NewManager(n.storage.identity)
-	if err := pm.Start(ctx, n.config.ListenIP); err != nil { return err }
+	if err := pm.Start(ctx, n.config.ListenIP); err != nil {
+		return err
+	}
 	pm.RegisterHandlers(n.solana) // Register handlers with Solana context
 	n.p2p = pm
 
@@ -84,24 +93,45 @@ func (n *ZarkhamNode) Stop() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	if n.p2p != nil { n.p2p.Stop() }
+	if n.p2p != nil {
+		n.p2p.Stop()
+	}
 	return nil
 }
 
 func (n *ZarkhamNode) Status() p2p.NodeStatus {
-	if n.p2p == nil { return p2p.NodeStatus{IsRunning: false} }
+	if n.p2p == nil {
+		return p2p.NodeStatus{IsRunning: false}
+	}
 	return n.p2p.Status()
 }
 
 // --- GUI API Bridges ---
 
+func (n *ZarkhamNode) GetSystemInfo() map[string]interface{} {
+	return map[string]interface{}{
+		"version": "1.0.0",
+	}
+}
+
+func (n *ZarkhamNode) GetTelemetry() map[string]interface{} {
+	return map[string]interface{}{
+		"bandwidth_served": 0, // TODO: Implement in p2p
+		"active_tunnels":   0,
+	}
+}
+
 func (n *ZarkhamNode) GetWardens(ctx context.Context) ([]*solana.Warden, error) {
-	if n.solana == nil { return nil, fmt.Errorf("solana client not initialized") }
+	if n.solana == nil {
+		return nil, fmt.Errorf("solana client not initialized")
+	}
 	return n.solana.FetchAllWardens()
 }
 
 func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden, error) {
-	if n.solana == nil { return false, nil, fmt.Errorf("solana client not initialized") }
+	if n.solana == nil {
+		return false, nil, fmt.Errorf("solana client not initialized")
+	}
 	registered, err := n.solana.IsWardenRegistered()
 	if err != nil || !registered {
 		return false, nil, err
@@ -120,7 +150,7 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) er
 	if err != nil {
 		return fmt.Errorf("invalid multiaddr: %w", err)
 	}
-	
+
 	info, err := peer.AddrInfoFromP2pAddr(ma)
 	if err != nil {
 		return fmt.Errorf("failed to get peer info: %w", err)
@@ -147,7 +177,9 @@ func (n *ZarkhamNode) GetWalletBalance(ctx context.Context, profile string) (uin
 	}
 	if n.solana == nil {
 		sc, err := solana.NewReadOnlyClient(n.config.RpcEndpoint)
-		if err != nil { return 0, err }
+		if err != nil {
+			return 0, err
+		}
 		return sc.GetBalance(pk.PublicKey())
 	}
 	return n.solana.GetBalance(pk.PublicKey())
@@ -155,8 +187,10 @@ func (n *ZarkhamNode) GetWalletBalance(ctx context.Context, profile string) (uin
 
 func (n *ZarkhamNode) GetAddresses() (map[string]string, error) {
 	wallets, err := n.storage.wallet.GetAllWallets()
-	if err != nil { return nil, err }
-	
+	if err != nil {
+		return nil, err
+	}
+
 	res := make(map[string]string)
 	for name, pk := range wallets {
 		res[name] = pk.PublicKey().String()
@@ -167,16 +201,20 @@ func (n *ZarkhamNode) GetAddresses() (map[string]string, error) {
 func (n *ZarkhamNode) RegisterWarden(ctx context.Context, profile string, stakeTokenStr string, stakeAmount float64) (string, error) {
 	// 1. Get Wallet
 	pk, err := n.storage.wallet.GetWallet(profile)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 
 	// 2. Client
 	sc, err := solana.NewClient(n.config.RpcEndpoint, pk)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 
 	// 3. Prepare Args
 	var token solana.StakeToken
 	var lamports uint64
-	
+
 	if stakeTokenStr == "SOL" {
 		token = solana.StakeToken_Sol
 		lamports = uint64(stakeAmount * 1e9)
@@ -188,10 +226,29 @@ func (n *ZarkhamNode) RegisterWarden(ctx context.Context, profile string, stakeT
 	}
 
 	peerID := n.p2p.Host().ID().String()
-	ipHash := sha256.Sum256([]byte("127.0.0.1")) 
+
+	// REAL IP Resolution
+	var ipStr string
+	for _, addr := range n.p2p.Host().Addrs() {
+		if manet.IsPublicAddr(addr) {
+			val, err := addr.ValueForProtocol(multiaddr.P_IP4)
+			if err == nil {
+				ipStr = val
+				break
+			}
+		}
+	}
+	if ipStr == "" {
+		ipStr = "0.0.0.0"
+		log.Println("WARNING: Could not determine public IP for registration. Using 0.0.0.0")
+	}
+
+	ipHash := sha256.Sum256([]byte(ipStr))
 
 	sig, err := sc.InitializeWarden(token, lamports, peerID, 0, ipHash)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 
 	return sig.String(), nil
 }
