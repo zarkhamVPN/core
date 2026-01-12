@@ -10,6 +10,7 @@ import (
 	"zarkham/core/solana"
 	"zarkham/core/storage"
 
+	solanago "github.com/gagliardetto/solana-go"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -55,7 +56,7 @@ func (n *ZarkhamNode) Start(ctx context.Context, profile string) error {
 	pk, err := n.storage.wallet.GetWallet(profile)
 	if err != nil {
 		log.Printf("Profile '%s' not found. Creating new wallet...", profile)
-		newPk := solana.NewWallet().PrivateKey
+		newPk := solanago.NewWallet().PrivateKey
 		if err := n.storage.wallet.SaveWallet(profile, newPk); err != nil {
 			return fmt.Errorf("failed to save new wallet: %w", err)
 		}
