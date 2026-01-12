@@ -14,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	"github.com/multiformats/go-multiaddr"
 )
 
 type Manager struct {
@@ -135,4 +136,18 @@ func (m *Manager) Status() NodeStatus {
 
 func (m *Manager) Host() host.Host {
 	return m.host
+}
+
+func (m *Manager) Connect(ctx context.Context, addr string) error {
+	ma, err := multiaddr.NewMultiaddr(addr)
+	if err != nil {
+		return fmt.Errorf("invalid multiaddr: %w", err)
+	}
+
+	info, err := peer.AddrInfoFromP2pAddr(ma)
+	if err != nil {
+		return fmt.Errorf("failed to get addr info: %w", err)
+	}
+
+	return m.host.Connect(ctx, *info)
 }
