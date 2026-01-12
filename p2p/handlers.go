@@ -14,7 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr-net"
-	"golang.zx2c4.com/wireguard/wgtypes"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 func (m *Manager) RegisterHandlers(sc *solana.Client) {

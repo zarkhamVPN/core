@@ -409,6 +409,19 @@ func (c *Client) FetchAllWardens() ([]*Warden, error) {
 	return wardens, nil
 }
 
+func (c *Client) FetchConnectionAccount(pda solana.PublicKey) (*Connection, error) {
+	resp, err := c.RpcClient.GetAccountInfoWithOpts(context.Background(), pda, &rpc.GetAccountInfoOpts{
+		Commitment: rpc.CommitmentConfirmed,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Value == nil {
+		return nil, fmt.Errorf("connection account not found")
+	}
+	return ParseAccount_Connection(resp.Value.Data.GetBinary())
+}
+
 func manualUnmarshalWarden(data []byte) (*Warden, error) {
 	if len(data) < 8 { return nil, fmt.Errorf("too short") }
 	offset := 8
