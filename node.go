@@ -63,6 +63,7 @@ func (n *ZarkhamNode) Start(ctx context.Context, profile string) error {
 	// 3. Initialize P2P Manager
 	pm := p2p.NewManager(n.storage.identity)
 	if err := pm.Start(ctx, n.config.ListenIP); err != nil { return err }
+	pm.RegisterHandlers(n.solana) // Register handlers with Solana context
 	n.p2p = pm
 
 	log.Println("Zarkham Node successfully started.")
