@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"sync"
@@ -137,4 +138,60 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) er
 	}
 
 	return nil
+}
+
+func (n *ZarkhamNode) GetWalletBalance(ctx context.Context, profile string) (uint64, error) {
+	pk, err := n.storage.wallet.GetWallet(profile)
+	if err != nil {
+		return 0, fmt.Errorf("profile not found")
+	}
+	if n.solana == nil {
+		sc, err := solana.NewReadOnlyClient(n.config.RpcEndpoint)
+		if err != nil { return 0, err }
+		return sc.GetBalance(pk.PublicKey())
+	}
+	return n.solana.GetBalance(pk.PublicKey())
+}
+
+func (n *ZarkhamNode) GetAddresses() (map[string]string, error) {
+	wallets, err := n.storage.wallet.GetAllWallets()
+	if err != nil { return nil, err }
+	
+	res := make(map[string]string)
+	for name, pk := range wallets {
+		res[name] = pk.PublicKey().String()
+	}
+	return res, nil
+}
+
+func (n *ZarkhamNode) RegisterWarden(ctx context.Context, profile string, stakeTokenStr string, stakeAmount float64) (string, error) {
+	// 1. Get Wallet
+	pk, err := n.storage.wallet.GetWallet(profile)
+	if err != nil { return "", err }
+
+	// 2. Client
+	sc, err := solana.NewClient(n.config.RpcEndpoint, pk)
+	if err != nil { return "", err }
+
+	// 3. Prepare Args
+	var token solana.StakeToken
+	var lamports uint64
+	
+	if stakeTokenStr == "SOL" {
+		token = solana.StakeToken_Sol
+		lamports = uint64(stakeAmount * 1e9)
+	} else if stakeTokenStr == "USDC" {
+		token = solana.StakeToken_Usdc
+		lamports = uint64(stakeAmount * 1e6)
+	} else {
+		return "", fmt.Errorf("unsupported token")
+	}
+
+	peerID := n.p2p.Host().ID().String()
+	ipHash := sha256.Sum256([]byte("127.0.0.1")) 
+
+	sig, err := sc.InitializeWarden(token, lamports, peerID, 0, ipHash)
+	if err != nil { return "", err }
+
+	return sig.String(), nil
 }
