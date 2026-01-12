@@ -57,39 +57,48 @@ func SetupInterface(name string, privKey wgtypes.Key, port int) (*wgctrl.Client,
 
 // AddPeer adds a remote peer to the WireGuard interface.
 func AddPeer(client *wgctrl.Client, iface string, pubKey wgtypes.Key, allowedIPs []string, endpoint string) error {
-	parsedIPs := make([]net.IPNet, len(allowedIPs))
+	parsedAllowedIPs := make([]net.IPNet, len(allowedIPs))
 	for i, ipStr := range allowedIPs {
 		_, ipNet, err := net.ParseCIDR(ipStr)
 		if err != nil {
-			return fmt.Errorf("invalid allowed IP: %s", ipStr)
+			return fmt.Errorf("invalid allowed IP CIDR: %s", ipStr)
 		}
-		parsedIPs[i] = *ipNet
+		parsedAllowedIPs[i] = *ipNet
 	}
 
 	var udpAddr *net.UDPAddr
 	if endpoint != "" {
 		maddr, err := multiaddr.NewMultiaddr(endpoint)
 		if err != nil {
-			return fmt.Errorf("invalid endpoint: %w", err)
+			return fmt.Errorf("invalid endpoint multiaddr: %w", err)
 		}
-		udpAddr, err = extractUDPEndpoint(maddr)
+
+		udpAddr, err = ExtractUDPEndpoint(maddr)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to extract UDP endpoint: %w", err)
 		}
 	}
 
-	cfg := wgtypes.Config{
-		Peers: []wgtypes.PeerConfig{{
+	peerCfg := []wgtypes.PeerConfig{
+		{
 			PublicKey:  pubKey,
-			AllowedIPs: parsedIPs,
+			AllowedIPs: parsedAllowedIPs,
 			Endpoint:   udpAddr,
-		}},
+		},
+	}
+
+	cfg := wgtypes.Config{
+		Peers: peerCfg,
 	}
 
 	return client.ConfigureDevice(iface, cfg)
 }
 
-func extractUDPEndpoint(maddr multiaddr.Multiaddr) (*net.UDPAddr, error) {
+func ExtractUDPEndpoint(maddr multiaddr.Multiaddr) (*net.UDPAddr, error) {
+	if maddr == nil {
+		return nil, nil
+	}
+
 	var ipStr string
 	var port int
 	var foundIP, foundUDP bool
@@ -100,14 +109,30 @@ func extractUDPEndpoint(maddr multiaddr.Multiaddr) (*net.UDPAddr, error) {
 			ipStr = c.Value()
 			foundIP = true
 		case multiaddr.P_UDP:
-			port, _ = strconv.Atoi(c.Value())
-			foundUDP = true
+			if p, err := strconv.Atoi(c.Value()); err == nil {
+				port = p
+				foundUDP = true
+			}
+		case 460: // P_QUIC
+			if p, err := strconv.Atoi(c.Value()); err == nil {
+				port = p
+				foundUDP = true
+			}
 		}
 		return true
 	})
 
 	if !foundIP || !foundUDP {
-		return nil, fmt.Errorf("missing IP or UDP")
+		return nil, fmt.Errorf("multiaddr missing required IP or UDP components")
 	}
-	return &net.UDPAddr{IP: net.ParseIP(ipStr), Port: port}, nil
+
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid IP address: %s", ipStr)
+	}
+
+	return &net.UDPAddr{
+		IP:   ip,
+		Port: port,
+	}, nil
 }
