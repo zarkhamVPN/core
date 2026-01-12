@@ -51,10 +51,16 @@ func (n *ZarkhamNode) Start(ctx context.Context, profile string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// 1. Load Wallet
+	// 1. Load or Create Wallet
 	pk, err := n.storage.wallet.GetWallet(profile)
 	if err != nil {
-		return fmt.Errorf("failed to load profile %s: %w", profile, err)
+		log.Printf("Profile '%s' not found. Creating new wallet...", profile)
+		newPk := solana.NewWallet().PrivateKey
+		if err := n.storage.wallet.SaveWallet(profile, newPk); err != nil {
+			return fmt.Errorf("failed to save new wallet: %w", err)
+		}
+		pk = newPk
+		log.Printf("Created new wallet for profile '%s'", profile)
 	}
 
 	// 2. Initialize Solana Client
