@@ -3,8 +3,11 @@ package vpn
 import (
 	"fmt"
 	"log"
+	"net"
 	"os/exec"
+	"strconv"
 
+	"github.com/multiformats/go-multiaddr"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -54,6 +57,57 @@ func SetupInterface(name string, privKey wgtypes.Key, port int) (*wgctrl.Client,
 
 // AddPeer adds a remote peer to the WireGuard interface.
 func AddPeer(client *wgctrl.Client, iface string, pubKey wgtypes.Key, allowedIPs []string, endpoint string) error {
-	// ... port AddWireGuardPeer logic here ...
-	return nil // placeholder for brevity, implementation matches arkham-cli/node/node.go
+	parsedIPs := make([]net.IPNet, len(allowedIPs))
+	for i, ipStr := range allowedIPs {
+		_, ipNet, err := net.ParseCIDR(ipStr)
+		if err != nil {
+			return fmt.Errorf("invalid allowed IP: %s", ipStr)
+		}
+		parsedIPs[i] = *ipNet
+	}
+
+	var udpAddr *net.UDPAddr
+	if endpoint != "" {
+		maddr, err := multiaddr.NewMultiaddr(endpoint)
+		if err != nil {
+			return fmt.Errorf("invalid endpoint: %w", err)
+		}
+		udpAddr, err = extractUDPEndpoint(maddr)
+		if err != nil {
+			return err
+		}
+	}
+
+	cfg := wgtypes.Config{
+		Peers: []wgtypes.PeerConfig{{
+			PublicKey:  pubKey,
+			AllowedIPs: parsedIPs,
+			Endpoint:   udpAddr,
+		}},
+	}
+
+	return client.ConfigureDevice(iface, cfg)
+}
+
+func extractUDPEndpoint(maddr multiaddr.Multiaddr) (*net.UDPAddr, error) {
+	var ipStr string
+	var port int
+	var foundIP, foundUDP bool
+
+	multiaddr.ForEach(maddr, func(c multiaddr.Component) bool {
+		switch c.Protocol().Code {
+		case multiaddr.P_IP4, multiaddr.P_IP6:
+			ipStr = c.Value()
+			foundIP = true
+		case multiaddr.P_UDP:
+			port, _ = strconv.Atoi(c.Value())
+			foundUDP = true
+		}
+		return true
+	})
+
+	if !foundIP || !foundUDP {
+		return nil, fmt.Errorf("missing IP or UDP")
+	}
+	return &net.UDPAddr{IP: net.ParseIP(ipStr), Port: port}, nil
 }
