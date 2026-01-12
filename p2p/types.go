@@ -1,11 +1,7 @@
 package p2p
 
 import (
-	"sync"
-	"time"
-
 	"github.com/gagliardetto/solana-go"
-	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
