@@ -2,7 +2,6 @@ package p2p
 
 import (
 	"context"
-	"log"
 	"time"
 
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
