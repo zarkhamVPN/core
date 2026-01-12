@@ -18,17 +18,21 @@ import (
 )
 
 type Manager struct {
-	mu        sync.Mutex
-	host      host.Host
-	dht       *kaddht.IpfsDHT
-	mdns      mdns.Service
-	isRunning bool
-	storage   *storage.IdentityStorage
+	mu                sync.Mutex
+	host              host.Host
+	dht               *kaddht.IpfsDHT
+	mdns              mdns.Service
+	isRunning         bool
+	storage           *storage.IdentityStorage
+	ipPool            *IPPoolManager
+	activeConnections map[peer.ID]*WireGuardConnection
 }
 
 func NewManager(is *storage.IdentityStorage) *Manager {
 	return &Manager{
-		storage: is,
+		storage:           is,
+		ipPool:            NewIPPoolManager("10.10.10.0"),
+		activeConnections: make(map[peer.ID]*WireGuardConnection),
 	}
 }
 
