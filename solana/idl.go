@@ -1,6 +1,12 @@
 package solana
 
-import "encoding/json"
+import (
+	_ "embed"
+	"encoding/json"
+)
+
+//go:embed arkham_protocol.json
+var IDL_JSON []byte
 
 type IDL struct {
 	Address      string `json:"address"`
@@ -38,13 +44,3 @@ func ParseIDL(data []byte) (*IDL, error) {
 	err := json.Unmarshal(data, &idl)
 	return &idl, err
 }
-
-const IDL_JSON = `{
-  "address": "B85X9aTrpWAdi1xhLvPmDPuYmfz5YdMd9X8qr7uU4H18",
-  "metadata": {
-    "name": "arkham_protocol",
-    "version": "0.1.0",
-    "spec": "0.1.0",
-    "description": "Created with Anchor"
-  }
-}`

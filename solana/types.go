@@ -2276,3 +2276,9 @@ func UnmarshalWardenUnstaked(buf []byte) (*WardenUnstaked, error) {
 	}
 	return obj, nil
 }
+
+// ConnectionResult wraps a Connection account with its public key.
+type ConnectionResult struct {
+	PublicKey solanago.PublicKey
+	Account   Connection
+}
