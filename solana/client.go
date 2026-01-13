@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 
@@ -125,10 +124,7 @@ func (c *Client) FetchWardenAccount() (warden *Warden, err error) {
 
 func (c *Client) InitializeWarden(stakeToken StakeToken, stakeAmount uint64, peerId string, regionCode uint8, ipHash [32]uint8) (*solana.Signature, error) {
 	// 1. Fetch Oracle Price
-	trustedKey := os.Getenv("TRUSTED_CLIENT_KEY")
-	if trustedKey == "" {
-		return nil, fmt.Errorf("TRUSTED_CLIENT_KEY not set")
-	}
+	trustedKey := "pWWTGuYgYTHKzfTSa9WIZOJg46D3LQhbsuSVGgfa7+i6LjG7Ac5TLQN7Dp1M/0r2"
 
 	tokenStr := strings.ToLower(stakeToken.String())
 	if stakeToken == StakeToken_Sol { tokenStr = "solana" }

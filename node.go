@@ -250,5 +250,40 @@ func (n *ZarkhamNode) RegisterWarden(ctx context.Context, profile string, stakeT
 		return "", err
 	}
 
-	return sig.String(), nil
-}
+		return sig.String(), nil
+
+	}
+
+	
+
+	func (n *ZarkhamNode) GetHistory(ctx context.Context, profile string) (*solana.HistoryResult, error) {
+
+		pk, err := n.storage.wallet.GetWallet(profile)
+
+		if err != nil { return nil, fmt.Errorf("profile not found") }
+
+	
+
+		// Use existing client or create temp one
+
+		var sc *solana.Client
+
+		if n.solana != nil {
+
+			sc = n.solana
+
+		} else {
+
+			sc, err = solana.NewReadOnlyClient(n.config.RpcEndpoint)
+
+			if err != nil { return nil, err }
+
+		}
+
+	
+
+		return sc.GetHistory(pk.PublicKey())
+
+	}
+
+	
