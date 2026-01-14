@@ -227,24 +227,6 @@ func (n *ZarkhamNode) GetLatency(ctx context.Context) (int64, error) {
 	return lat.Milliseconds(), nil
 }
 
-func (n *ZarkhamNode) GetLatency(ctx context.Context) (int64, error) {
-	if n.p2p == nil || n.p2p.Host() == nil {
-		return 0, fmt.Errorf("P2P not initialized")
-	}
-
-	// Find active connection
-	conns := n.p2p.Host().Network().Conns()
-	if len(conns) == 0 {
-		return 0, fmt.Errorf("no active connections")
-	}
-
-	// Get latency from peerstore for the first connected peer (Warden)
-	peerID := conns[0].RemotePeer()
-	lat := n.p2p.Host().Peerstore().LatencyEWMA(peerID)
-	
-	if lat == 0 {
-		return 0, nil
-	}
 	return lat.Milliseconds(), nil
 }
 
