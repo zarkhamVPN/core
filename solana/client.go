@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -456,4 +457,26 @@ func manualUnmarshalWarden(data []byte) (*Warden, error) {
 
 	// Skip option check for brevity in porting, or implement full logic
 	return w, nil
+}
+
+func (c *Client) WaitForConfirmation(ctx context.Context, sig solana.Signature) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(1 * time.Second):
+			out, err := c.RpcClient.GetSignatureStatuses(ctx, true, sig)
+			if err != nil {
+				continue
+			}
+			if len(out.Value) > 0 && out.Value[0] != nil {
+				if out.Value[0].Err != nil {
+					return fmt.Errorf("transaction failed: %v", out.Value[0].Err)
+				}
+				if out.Value[0].ConfirmationStatus == rpc.ConfirmationStatusConfirmed || out.Value[0].ConfirmationStatus == rpc.ConfirmationStatusFinalized {
+					return nil
+				}
+			}
+		}
+	}
 }

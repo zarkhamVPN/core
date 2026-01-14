@@ -172,8 +172,11 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) er
 		log.Printf("Warning: Failed to initialize connection account: %v", err)
 	} else {
 		log.Printf("Connection initialized. Sig: %s", sig)
-		// Wait for confirmation? Ideally yes, but for speed we might try to race it.
-		// In production, we should wait for the transaction to confirm.
+		log.Println("Waiting for transaction confirmation...")
+		if err := n.solana.WaitForConfirmation(ctx, *sig); err != nil {
+			return fmt.Errorf("failed to confirm connection transaction: %w", err)
+		}
+		log.Println("Transaction confirmed. Proceeding with P2P handshake...")
 	}
 
 	// 3. Libp2p Connect
