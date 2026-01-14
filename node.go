@@ -122,11 +122,24 @@ func (n *ZarkhamNode) GetTelemetry() map[string]interface{} {
 	}
 }
 
-func (n *ZarkhamNode) GetWardens(ctx context.Context) ([]*solana.Warden, error) {
+func (n *ZarkhamNode) GetWardens(ctx context.Context) ([]*WardenInfo, error) {
 	if n.solana == nil {
 		return nil, fmt.Errorf("solana client not initialized")
 	}
-	return n.solana.FetchAllWardens()
+	rawWardens, err := n.solana.FetchAllWardens()
+	if err != nil {
+		return nil, err
+	}
+
+	var enriched []*WardenInfo
+	for _, w := range rawWardens {
+		price, _ := n.solana.CalculateWardenRate(w)
+		enriched = append(enriched, &WardenInfo{
+			Warden: w,
+			Price:  price,
+		})
+	}
+	return enriched, nil
 }
 
 type WardenInfo struct {
@@ -185,10 +198,6 @@ func (n *ZarkhamNode) GetSeekerStatus(ctx context.Context) (bool, *SeekerStatus,
 	// Check for active connections
 	connections, err := n.solana.FetchMyConnections("seeker")
 	if err == nil && len(connections) > 0 {
-		// Assuming one active connection for now
-		// We take the last one as "active" (or the one not closed? Connection accounts are closed when ended)
-		// Since FetchMyConnections returns existing accounts, and EndConnection closes them,
-		// any result here is an active connection.
 		active := connections[0]
 		status.ConnectedWardenPDA = active.PublicKey.String()
 		status.ConnectedWardenAuthority = active.Account.Warden.String()
@@ -197,6 +206,46 @@ func (n *ZarkhamNode) GetSeekerStatus(ctx context.Context) (bool, *SeekerStatus,
 	// Check if registered (escrow > 0 or has authority set)
 	isRegistered := seeker.EscrowBalance > 0 || seeker.Authority != solanago.PublicKey{}
 	return isRegistered, status, nil
+}
+
+func (n *ZarkhamNode) GetLatency(ctx context.Context) (int64, error) {
+	if n.p2p == nil || n.p2p.Host() == nil {
+		return 0, fmt.Errorf("P2P not initialized")
+	}
+
+	conns := n.p2p.Host().Network().Conns()
+	if len(conns) == 0 {
+		return 0, fmt.Errorf("no active connections")
+	}
+
+	peerID := conns[0].RemotePeer()
+	lat := n.p2p.Host().Peerstore().LatencyEWMA(peerID)
+	
+	if lat == 0 {
+		return 0, nil
+	}
+	return lat.Milliseconds(), nil
+}
+
+func (n *ZarkhamNode) GetLatency(ctx context.Context) (int64, error) {
+	if n.p2p == nil || n.p2p.Host() == nil {
+		return 0, fmt.Errorf("P2P not initialized")
+	}
+
+	// Find active connection
+	conns := n.p2p.Host().Network().Conns()
+	if len(conns) == 0 {
+		return 0, fmt.Errorf("no active connections")
+	}
+
+	// Get latency from peerstore for the first connected peer (Warden)
+	peerID := conns[0].RemotePeer()
+	lat := n.p2p.Host().Peerstore().LatencyEWMA(peerID)
+	
+	if lat == 0 {
+		return 0, nil
+	}
+	return lat.Milliseconds(), nil
 }
 
 func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden, error) {

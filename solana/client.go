@@ -476,11 +476,6 @@ func (c *Client) FetchWardenByPeerID(peerID string) (*Warden, error) {
 	return nil, fmt.Errorf("warden with peer ID %s not found", peerID)
 }
 
-type ConnectionResult struct {
-	PublicKey solana.PublicKey
-	Account   *Connection
-}
-
 func (c *Client) FetchMyConnections(profileType string) ([]*ConnectionResult, error) {
 	resp, err := c.RpcClient.GetProgramAccountsWithOpts(
 		context.Background(),
@@ -501,7 +496,14 @@ func (c *Client) FetchMyConnections(profileType string) ([]*ConnectionResult, er
 	}
 
 	var results []*ConnectionResult
-	myPK := c.Signer.PublicKey()
+	
+	// Derive the PDA we are filtering for
+	var userPDA solana.PublicKey
+	if profileType == "seeker" {
+		userPDA, _, _ = GetSeekerPDA(c.Signer.PublicKey())
+	} else {
+		userPDA, _, _ = c.GetWardenPDA()
+	}
 
 	for _, acc := range resp {
 		conn, err := manualUnmarshalConnection(acc.Account.Data.GetBinary())
@@ -510,16 +512,16 @@ func (c *Client) FetchMyConnections(profileType string) ([]*ConnectionResult, er
 		}
 
 		match := false
-		if profileType == "seeker" && conn.Seeker.Equals(myPK) {
+		if profileType == "seeker" && conn.Seeker.Equals(userPDA) {
 			match = true
-		} else if profileType == "warden" && conn.Warden.Equals(myPK) {
+		} else if profileType == "warden" && conn.Warden.Equals(userPDA) {
 			match = true
 		}
 
 		if match {
 			results = append(results, &ConnectionResult{
 				PublicKey: acc.Pubkey,
-				Account:   conn,
+				Account:   *conn,
 			})
 		}
 	}
@@ -527,7 +529,7 @@ func (c *Client) FetchMyConnections(profileType string) ([]*ConnectionResult, er
 }
 
 func manualUnmarshalConnection(data []byte) (*Connection, error) {
-	if len(data) < 8+32+32+8+8+8 {
+	if len(data) < 8+32+32+8+8+8+8+8+8+2 { // Minimal size check
 		return nil, fmt.Errorf("account data too short")
 	}
 	offset := 8
@@ -536,14 +538,25 @@ func manualUnmarshalConnection(data []byte) (*Connection, error) {
 	offset += 32
 	c.Warden = solana.PublicKeyFromBytes(data[offset : offset+32])
 	offset += 32
+	c.StartedAt = int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
+	offset += 8
+	c.LastProofAt = int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
+	offset += 8
+	c.BandwidthConsumed = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+	
+	// Skip BandwidthProofs (Vec) - 4 bytes length + content
+	proofsLen := binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4 + (int(proofsLen) * 80) // BandwidthProof is 80 bytes (8+8+64)
+
 	c.AmountEscrowed = binary.LittleEndian.Uint64(data[offset : offset+8])
 	offset += 8
-	c.MbEstimated = binary.LittleEndian.Uint64(data[offset : offset+8])
+	c.AmountPaid = binary.LittleEndian.Uint64(data[offset : offset+8])
 	offset += 8
-	c.MbConsumed = binary.LittleEndian.Uint64(data[offset : offset+8])
+	c.RatePerMb = binary.LittleEndian.Uint64(data[offset : offset+8])
 	offset += 8
-	c.CreatedAt = int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
-	offset += 8
+	c.WardenMultiplier = binary.LittleEndian.Uint16(data[offset : offset+2])
+	
 	return c, nil
 }
 
