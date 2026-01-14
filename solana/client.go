@@ -234,15 +234,68 @@ func (c *Client) DepositEscrow(amount uint64) (*solana.Signature, error) {
 	return c.sendTx([]solana.Instruction{ix})
 }
 
-func (c *Client) EndConnection(wardenAuthority solana.PublicKey) (*solana.Signature, error) {
-	seekerPDA, _, _ := GetSeekerPDA(c.Signer.PublicKey())
-	wardenPDA, _, _ := GetWardenPDAForAuthority(wardenAuthority)
-	connPDA, _, _ := GetConnectionPDA(seekerPDA, wardenPDA)
+// EndConnection sends a transaction to close an active connection.
+func (c *Client) EndConnection(wardenPDA solana.PublicKey) (*solana.Signature, error) {
+	seekerAuthority := c.Signer.PublicKey()
 
-	ix, err := NewEndConnectionInstruction(connPDA, seekerPDA, wardenPDA, c.Signer.PublicKey())
-	if err != nil { return nil, err }
+	// Derive all PDAs
+	seekerPDA, _, err := GetSeekerPDA(seekerAuthority)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get seeker PDA: %w", err)
+	}
+	
+	// We assume wardenPDA is already the PDA
+	connectionPDA, _, err := GetConnectionPDA(seekerPDA, wardenPDA)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection PDA: %w", err)
+	}
 
-	return c.sendTx([]solana.Instruction{ix})
+	// Build instruction
+	instruction, err := NewEndConnectionInstruction(
+		connectionPDA,
+		seekerPDA,
+		wardenPDA,
+		seekerAuthority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create EndConnection instruction: %w", err)
+	}
+
+	// Get latest blockhash
+	latestBlockhash, err := c.RpcClient.GetLatestBlockhash(context.Background(), rpc.CommitmentFinalized)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest blockhash: %w", err)
+	}
+
+	// Create and sign transaction
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{instruction},
+		latestBlockhash.Value.Blockhash,
+		solana.TransactionPayer(c.Signer.PublicKey()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	_, err = tx.Sign(
+		func(key solana.PublicKey) *solana.PrivateKey {
+			if c.Signer.PublicKey().Equals(key) {
+				return &c.Signer
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	// Send transaction
+	sig, err := c.RpcClient.SendTransaction(context.Background(), tx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	return &sig, nil
 }
 
 // --- Utils ---

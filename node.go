@@ -227,9 +227,6 @@ func (n *ZarkhamNode) GetLatency(ctx context.Context) (int64, error) {
 	return lat.Milliseconds(), nil
 }
 
-	return lat.Milliseconds(), nil
-}
-
 func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden, error) {
 	if n.solana == nil {
 		return false, nil, fmt.Errorf("solana client not initialized")
@@ -322,8 +319,16 @@ func (n *ZarkhamNode) DisconnectWarden(ctx context.Context, wardenAuthStr string
 	if err != nil {
 		log.Printf("Warning: On-chain EndConnection failed: %v", err)
 	} else {
-		log.Printf("On-chain connection closed. Sig: %s", sig)
-		_ = n.solana.WaitForConfirmation(ctx, *sig)
+		log.Printf("On-chain connection ending. Sig: %s", sig)
+		// Wait for confirmation in background to not block UI
+		go func() {
+			err := n.solana.WaitForConfirmation(context.Background(), *sig)
+			if err != nil {
+				log.Printf("Warning: Disconnect confirmation failed: %v", err)
+			} else {
+				log.Printf("Disconnect confirmed on-chain.")
+			}
+		}()
 	}
 
 	// 2. Local Cleanup (Interface & Routing)

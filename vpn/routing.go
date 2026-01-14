@@ -41,15 +41,23 @@ func SetupSeekerRouting(ifaceName, gatewayIP string) error {
 	_ = runCommand("ip", "route", "add", "default", "dev", ifaceName, "table", table)
 	_ = runCommand("ip", "rule", "add", "from", "all", "lookup", table, "pref", "200")
 
-	// DNS Configuration (Systemd-resolved)
-	dnsServers := []string{"1.1.1.1", "1.0.0.1"}
+	// DNS Configuration
 	log.Printf("VPN: Configuring DNS for %s", ifaceName)
 	
-	if err := runCommand("resolvectl", "dns", ifaceName, strings.Join(dnsServers, " ")); err != nil {
-		log.Printf("Warning: Failed to set DNS via resolvectl: %v", err)
+	// Try resolvectl (systemd-resolved) - Pass IPs as SEPARATE arguments
+	err := runCommand("resolvectl", "dns", ifaceName, "1.1.1.1", "1.0.0.1")
+	if err == nil {
+		_ = runCommand("resolvectl", "domain", ifaceName, "~.")
+		return nil
 	}
-	if err := runCommand("resolvectl", "domain", ifaceName, "~."); err != nil {
-		log.Printf("Warning: Failed to set default DNS domain: %v", err)
+	
+	log.Printf("Warning: resolvectl failed: %v. Trying nmcli...", err)
+
+	// Fallback: nmcli (NetworkManager)
+	// nmcli dev modify arkhamwg0 ipv4.dns "1.1.1.1 1.0.0.1"
+	err = runCommand("nmcli", "dev", "modify", ifaceName, "ipv4.dns", "1.1.1.1 1.0.0.1")
+	if err != nil {
+		log.Printf("Warning: DNS setup failed. Internet access might be limited. Error: %v", err)
 	}
 	
 	return nil
