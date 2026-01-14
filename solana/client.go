@@ -476,6 +476,77 @@ func (c *Client) FetchWardenByPeerID(peerID string) (*Warden, error) {
 	return nil, fmt.Errorf("warden with peer ID %s not found", peerID)
 }
 
+type ConnectionResult struct {
+	PublicKey solana.PublicKey
+	Account   *Connection
+}
+
+func (c *Client) FetchMyConnections(profileType string) ([]*ConnectionResult, error) {
+	resp, err := c.RpcClient.GetProgramAccountsWithOpts(
+		context.Background(),
+		ProgramID,
+		&rpc.GetProgramAccountsOpts{
+			Filters: []rpc.RPCFilter{
+				{
+					Memcmp: &rpc.RPCFilterMemcmp{
+						Offset: 0,
+						Bytes:  Account_Connection[:],
+					},
+				},
+			},
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []*ConnectionResult
+	myPK := c.Signer.PublicKey()
+
+	for _, acc := range resp {
+		conn, err := manualUnmarshalConnection(acc.Account.Data.GetBinary())
+		if err != nil {
+			continue
+		}
+
+		match := false
+		if profileType == "seeker" && conn.Seeker.Equals(myPK) {
+			match = true
+		} else if profileType == "warden" && conn.Warden.Equals(myPK) {
+			match = true
+		}
+
+		if match {
+			results = append(results, &ConnectionResult{
+				PublicKey: acc.Pubkey,
+				Account:   conn,
+			})
+		}
+	}
+	return results, nil
+}
+
+func manualUnmarshalConnection(data []byte) (*Connection, error) {
+	if len(data) < 8+32+32+8+8+8 {
+		return nil, fmt.Errorf("account data too short")
+	}
+	offset := 8
+	c := &Connection{}
+	c.Seeker = solana.PublicKeyFromBytes(data[offset : offset+32])
+	offset += 32
+	c.Warden = solana.PublicKeyFromBytes(data[offset : offset+32])
+	offset += 32
+	c.AmountEscrowed = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+	c.MbEstimated = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+	c.MbConsumed = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+	c.CreatedAt = int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
+	offset += 8
+	return c, nil
+}
+
 func (c *Client) FetchConnectionAccount(pda solana.PublicKey) (*Connection, error) {
 	resp, err := c.RpcClient.GetAccountInfoWithOpts(context.Background(), pda, &rpc.GetAccountInfoOpts{
 		Commitment: rpc.CommitmentConfirmed,

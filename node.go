@@ -165,7 +165,13 @@ func (n *ZarkhamNode) DepositEscrow(ctx context.Context, amount uint64) (string,
 	return sig.String(), nil
 }
 
-func (n *ZarkhamNode) GetSeekerStatus(ctx context.Context) (bool, *solana.Seeker, error) {
+type SeekerStatus struct {
+	*solana.Seeker
+	ConnectedWardenPDA       string `json:"connectedWardenPDA,omitempty"`
+	ConnectedWardenAuthority string `json:"connectedWardenAuthority,omitempty"`
+}
+
+func (n *ZarkhamNode) GetSeekerStatus(ctx context.Context) (bool, *SeekerStatus, error) {
 	if n.solana == nil {
 		return false, nil, fmt.Errorf("solana client not initialized")
 	}
@@ -173,9 +179,24 @@ func (n *ZarkhamNode) GetSeekerStatus(ctx context.Context) (bool, *solana.Seeker
 	if err != nil {
 		return false, nil, err
 	}
+
+	status := &SeekerStatus{Seeker: seeker}
+
+	// Check for active connections
+	connections, err := n.solana.FetchMyConnections("seeker")
+	if err == nil && len(connections) > 0 {
+		// Assuming one active connection for now
+		// We take the last one as "active" (or the one not closed? Connection accounts are closed when ended)
+		// Since FetchMyConnections returns existing accounts, and EndConnection closes them,
+		// any result here is an active connection.
+		active := connections[0]
+		status.ConnectedWardenPDA = active.PublicKey.String()
+		status.ConnectedWardenAuthority = active.Account.Warden.String()
+	}
+
 	// Check if registered (escrow > 0 or has authority set)
 	isRegistered := seeker.EscrowBalance > 0 || seeker.Authority != solanago.PublicKey{}
-	return isRegistered, seeker, nil
+	return isRegistered, status, nil
 }
 
 func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden, error) {
@@ -207,8 +228,6 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string, es
 	}
 
 	// 2. Initialize On-Chain Connection (The "Ticket")
-	// We need the Warden's Authority (Solana PubKey), but we only have their Peer ID.
-	// We must look it up.
 	warden, err := n.solana.FetchWardenByPeerID(info.ID.String())
 	if err != nil {
 		return fmt.Errorf("failed to resolve warden authority from peer ID: %w", err)
@@ -236,7 +255,6 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string, es
 		}
 		log.Println("Transaction confirmed. Proceeding with P2P handshake...")
 	} else {
-		// Real error fetching account
 		return fmt.Errorf("failed to check connection account status: %w", err)
 	}
 
@@ -254,7 +272,41 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string, es
 	return nil
 }
 
+func (n *ZarkhamNode) DisconnectWarden(ctx context.Context, wardenAuthStr string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.solana == nil || n.p2p == nil {
+		return fmt.Errorf("node not initialized")
+	}
+
+	wardenAuth, err := solanago.PublicKeyFromBase58(wardenAuthStr)
+	if err != nil {
+		return fmt.Errorf("invalid warden authority: %w", err)
+	}
+
+	// 1. End On-Chain Connection (Refunds Escrow)
+	log.Printf("Closing on-chain connection with Warden %s...", wardenAuth)
+	sig, err := n.solana.EndConnection(wardenAuth)
+	if err != nil {
+		log.Printf("Warning: On-chain EndConnection failed: %v", err)
+	} else {
+		log.Printf("On-chain connection closed. Sig: %s", sig)
+		_ = n.solana.WaitForConfirmation(ctx, *sig)
+	}
+
+	// 2. Local Cleanup (Interface & Routing)
+	// Find the peer ID associated with this authority to stop the tunnel
+	// In this simplified architecture, we stop all active tunnels for this manager
+	// or we look up the specific peer.
+	n.p2p.Stop() // For now, stopping P2P is the cleanest way to wipe interfaces
+	
+	// Restart P2P so node stays "Running" but disconnected
+	return n.p2p.Start(ctx, n.config.ListenIP)
+}
+
 func (n *ZarkhamNode) GetWalletBalance(ctx context.Context, profile string) (uint64, error) {
+
 	pk, err := n.storage.wallet.GetWallet(profile)
 	if err != nil {
 		return 0, fmt.Errorf("profile not found")

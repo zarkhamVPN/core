@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strings"
 )
 
 func runCommand(name string, args ...string) error {
@@ -39,6 +40,17 @@ func SetupSeekerRouting(ifaceName, gatewayIP string) error {
 	table := "51820"
 	_ = runCommand("ip", "route", "add", "default", "dev", ifaceName, "table", table)
 	_ = runCommand("ip", "rule", "add", "from", "all", "lookup", table, "pref", "200")
+
+	// DNS Configuration (Systemd-resolved)
+	dnsServers := []string{"1.1.1.1", "1.0.0.1"}
+	log.Printf("VPN: Configuring DNS for %s", ifaceName)
+	
+	if err := runCommand("resolvectl", "dns", ifaceName, strings.Join(dnsServers, " ")); err != nil {
+		log.Printf("Warning: Failed to set DNS via resolvectl: %v", err)
+	}
+	if err := runCommand("resolvectl", "domain", ifaceName, "~."); err != nil {
+		log.Printf("Warning: Failed to set default DNS domain: %v", err)
+	}
 	
 	return nil
 }
