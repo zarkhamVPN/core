@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"strings"
 )
 
 func runCommand(name string, args ...string) error {
