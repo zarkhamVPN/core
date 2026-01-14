@@ -129,11 +129,29 @@ func (n *ZarkhamNode) GetWardens(ctx context.Context) ([]*solana.Warden, error) 
 	return n.solana.FetchAllWardens()
 }
 
-func (n *ZarkhamNode) LookupWarden(ctx context.Context, peerID string) (*solana.Warden, error) {
+type WardenInfo struct {
+	*solana.Warden
+	Price uint64 `json:"price"`
+}
+
+func (n *ZarkhamNode) LookupWarden(ctx context.Context, peerID string) (*WardenInfo, error) {
 	if n.solana == nil {
 		return nil, fmt.Errorf("solana client not initialized")
 	}
-	return n.solana.FetchWardenByPeerID(peerID)
+	w, err := n.solana.FetchWardenByPeerID(peerID)
+	if err != nil {
+		return nil, err
+	}
+	
+	price, err := n.solana.CalculateWardenRate(w)
+	if err != nil {
+		return nil, err
+	}
+
+	return &WardenInfo{
+		Warden: w,
+		Price:  price,
+	}, nil
 }
 
 func (n *ZarkhamNode) DepositEscrow(ctx context.Context, amount uint64) (string, error) {

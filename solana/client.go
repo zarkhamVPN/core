@@ -363,7 +363,47 @@ func (c *Client) GenerateBandwidthProofSignature(wardenAuthority solana.PublicKe
 	hasher.Write(msgBuffer.Bytes())
 	messageHash := hasher.Sum(nil)
 
-	return c.Signer.Sign(messageHash)
+	seekerSignature, err := c.Signer.Sign(messageHash)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("failed to sign message as seeker: %w", err)
+	}
+
+	return seekerSignature, nil
+}
+
+func (c *Client) CalculateWardenRate(warden *Warden) (uint64, error) {
+	config, err := c.FetchProtocolConfig()
+	if err != nil {
+		return 0, err
+	}
+
+	baseRate := config.BaseRatePerMb
+
+	// Geo Premium
+	geoPremiumBps := uint16(0)
+	for _, gp := range config.GeoPremiums {
+		if gp.RegionCode == warden.RegionCode {
+			geoPremiumBps = gp.PremiumBps
+			break
+		}
+	}
+
+	// Tier Multiplier
+	tierMultiplier := uint16(10000) // Default 1.0x if issue, but struct has 3
+	switch warden.Tier {
+	case Tier_Bronze:
+		tierMultiplier = config.TierMultipliers[0]
+	case Tier_Silver:
+		tierMultiplier = config.TierMultipliers[1]
+	case Tier_Gold:
+		tierMultiplier = config.TierMultipliers[2]
+	}
+
+	// Calculation logic matches contract
+	rateWithGeo := (baseRate * uint64(10000+geoPremiumBps)) / 10000
+	rateFinal := (rateWithGeo * uint64(tierMultiplier)) / 10000
+
+	return rateFinal, nil
 }
 
 func (c *Client) ClaimEarnings(usePrivate bool) (*solana.Signature, error) {
