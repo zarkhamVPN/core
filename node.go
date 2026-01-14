@@ -129,6 +129,24 @@ func (n *ZarkhamNode) GetWardens(ctx context.Context) ([]*solana.Warden, error) 
 	return n.solana.FetchAllWardens()
 }
 
+func (n *ZarkhamNode) LookupWarden(ctx context.Context, peerID string) (*solana.Warden, error) {
+	if n.solana == nil {
+		return nil, fmt.Errorf("solana client not initialized")
+	}
+	return n.solana.FetchWardenByPeerID(peerID)
+}
+
+func (n *ZarkhamNode) DepositEscrow(ctx context.Context, amount uint64) (string, error) {
+	if n.solana == nil {
+		return "", fmt.Errorf("solana client not initialized")
+	}
+	sig, err := n.solana.DepositEscrow(amount)
+	if err != nil {
+		return "", err
+	}
+	return sig.String(), nil
+}
+
 func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden, error) {
 	if n.solana == nil {
 		return false, nil, fmt.Errorf("solana client not initialized")
@@ -141,7 +159,7 @@ func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden
 	return true, warden, err
 }
 
-func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) error {
+func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string, estimatedMb uint64) error {
 	if n.p2p == nil {
 		return fmt.Errorf("P2P manager not initialized")
 	}
@@ -175,7 +193,7 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) er
 		log.Printf("Connection account %s already exists. Skipping on-chain initialization.", connectionPDA)
 	} else if strings.Contains(err.Error(), "not found") {
 		log.Printf("Initializing on-chain connection with Warden %s...", warden.Authority)
-		sig, err := n.solana.StartConnection(warden.Authority, 100) // Default 100MB
+		sig, err := n.solana.StartConnection(warden.Authority, estimatedMb)
 		if err != nil {
 			return fmt.Errorf("failed to initialize connection account: %w", err)
 		}
