@@ -217,6 +217,23 @@ func (c *Client) StartConnection(wardenAuthority solana.PublicKey, estimatedMb u
 	return c.sendTx([]solana.Instruction{ix})
 }
 
+func (c *Client) DepositEscrow(amount uint64) (*solana.Signature, error) {
+	seekerPDA, _, _ := GetSeekerPDA(c.Signer.PublicKey())
+
+	ix, err := NewDepositEscrowInstruction(
+		amount,
+		false, // usePrivate
+		seekerPDA,
+		c.Signer.PublicKey(),
+		solana.SystemProgramID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.sendTx([]solana.Instruction{ix})
+}
+
 func (c *Client) EndConnection(wardenAuthority solana.PublicKey) (*solana.Signature, error) {
 	seekerPDA, _, _ := GetSeekerPDA(c.Signer.PublicKey())
 	wardenPDA, _, _ := GetWardenPDAForAuthority(wardenAuthority)
