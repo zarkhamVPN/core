@@ -177,15 +177,15 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) er
 		log.Printf("Initializing on-chain connection with Warden %s...", warden.Authority)
 		sig, err := n.solana.StartConnection(warden.Authority, 100) // Default 100MB
 		if err != nil {
-			log.Printf("Warning: Failed to initialize connection account: %v", err)
-		} else {
-			log.Printf("Connection initialized. Sig: %s", sig)
-			log.Println("Waiting for transaction confirmation...")
-			if err := n.solana.WaitForConfirmation(ctx, *sig); err != nil {
-				return fmt.Errorf("failed to confirm connection transaction: %w", err)
-			}
-			log.Println("Transaction confirmed. Proceeding with P2P handshake...")
+			return fmt.Errorf("failed to initialize connection account: %w", err)
 		}
+		
+		log.Printf("Connection initialized. Sig: %s", sig)
+		log.Println("Waiting for transaction confirmation...")
+		if err := n.solana.WaitForConfirmation(ctx, *sig); err != nil {
+			return fmt.Errorf("failed to confirm connection transaction: %w", err)
+		}
+		log.Println("Transaction confirmed. Proceeding with P2P handshake...")
 	} else {
 		// Real error fetching account
 		return fmt.Errorf("failed to check connection account status: %w", err)
