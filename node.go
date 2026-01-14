@@ -165,6 +165,19 @@ func (n *ZarkhamNode) DepositEscrow(ctx context.Context, amount uint64) (string,
 	return sig.String(), nil
 }
 
+func (n *ZarkhamNode) GetSeekerStatus(ctx context.Context) (bool, *solana.Seeker, error) {
+	if n.solana == nil {
+		return false, nil, fmt.Errorf("solana client not initialized")
+	}
+	seeker, err := n.solana.FetchSeekerAccount()
+	if err != nil {
+		return false, nil, err
+	}
+	// Check if registered (escrow > 0 or has authority set)
+	isRegistered := seeker.EscrowBalance > 0 || seeker.Authority != solanago.PublicKey{}
+	return isRegistered, seeker, nil
+}
+
 func (n *ZarkhamNode) GetWardenStatus(ctx context.Context) (bool, *solana.Warden, error) {
 	if n.solana == nil {
 		return false, nil, fmt.Errorf("solana client not initialized")
