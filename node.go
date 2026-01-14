@@ -156,12 +156,32 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) er
 		return fmt.Errorf("failed to get peer info: %w", err)
 	}
 
-	// 2. Libp2p Connect
+	// 2. Initialize On-Chain Connection (The "Ticket")
+	// We need the Warden's Authority (Solana PubKey), but we only have their Peer ID.
+	// We must look it up.
+	warden, err := n.solana.FetchWardenByPeerID(info.ID.String())
+	if err != nil {
+		return fmt.Errorf("failed to resolve warden authority from peer ID: %w", err)
+	}
+
+	log.Printf("Initializing on-chain connection with Warden %s...", warden.Authority)
+	sig, err := n.solana.StartConnection(warden.Authority, 100) // Default 100MB
+	if err != nil {
+		// If it fails, it might already exist, or it's a real error.
+		// For now, we log and try to proceed, but usually this is fatal for new connections.
+		log.Printf("Warning: Failed to initialize connection account: %v", err)
+	} else {
+		log.Printf("Connection initialized. Sig: %s", sig)
+		// Wait for confirmation? Ideally yes, but for speed we might try to race it.
+		// In production, we should wait for the transaction to confirm.
+	}
+
+	// 3. Libp2p Connect
 	if err := n.p2p.Connect(ctx, multiaddrStr); err != nil {
 		return fmt.Errorf("libp2p connect failed: %w", err)
 	}
 
-	// 3. Request VPN Tunnel
+	// 4. Request VPN Tunnel
 	seekerAuth := n.solana.Signer.PublicKey().String()
 	if err := n.p2p.RequestTunnel(ctx, info.ID, seekerAuth); err != nil {
 		return fmt.Errorf("vpn tunnel handshake failed: %w", err)

@@ -405,6 +405,19 @@ func (c *Client) FetchAllWardens() ([]*Warden, error) {
 	return wardens, nil
 }
 
+func (c *Client) FetchWardenByPeerID(peerID string) (*Warden, error) {
+	wardens, err := c.FetchAllWardens()
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range wardens {
+		if w.PeerId == peerID {
+			return w, nil
+		}
+	}
+	return nil, fmt.Errorf("warden with peer ID %s not found", peerID)
+}
+
 func (c *Client) FetchConnectionAccount(pda solana.PublicKey) (*Connection, error) {
 	resp, err := c.RpcClient.GetAccountInfoWithOpts(context.Background(), pda, &rpc.GetAccountInfoOpts{
 		Commitment: rpc.CommitmentConfirmed,
