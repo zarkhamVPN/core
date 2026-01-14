@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"zarkham/core/p2p"
@@ -164,19 +165,30 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string) er
 		return fmt.Errorf("failed to resolve warden authority from peer ID: %w", err)
 	}
 
-	log.Printf("Initializing on-chain connection with Warden %s...", warden.Authority)
-	sig, err := n.solana.StartConnection(warden.Authority, 100) // Default 100MB
-	if err != nil {
-		// If it fails, it might already exist, or it's a real error.
-		// For now, we log and try to proceed, but usually this is fatal for new connections.
-		log.Printf("Warning: Failed to initialize connection account: %v", err)
-	} else {
-		log.Printf("Connection initialized. Sig: %s", sig)
-		log.Println("Waiting for transaction confirmation...")
-		if err := n.solana.WaitForConfirmation(ctx, *sig); err != nil {
-			return fmt.Errorf("failed to confirm connection transaction: %w", err)
+	// Check if connection already exists
+	seekerPDA, _, _ := solana.GetSeekerPDA(n.solana.Signer.PublicKey())
+	wardenPDA, _, _ := solana.GetWardenPDAForAuthority(warden.Authority)
+	connectionPDA, _, _ := solana.GetConnectionPDA(seekerPDA, wardenPDA)
+
+	_, err = n.solana.FetchConnectionAccount(connectionPDA)
+	if err == nil {
+		log.Printf("Connection account %s already exists. Skipping on-chain initialization.", connectionPDA)
+	} else if strings.Contains(err.Error(), "not found") {
+		log.Printf("Initializing on-chain connection with Warden %s...", warden.Authority)
+		sig, err := n.solana.StartConnection(warden.Authority, 100) // Default 100MB
+		if err != nil {
+			log.Printf("Warning: Failed to initialize connection account: %v", err)
+		} else {
+			log.Printf("Connection initialized. Sig: %s", sig)
+			log.Println("Waiting for transaction confirmation...")
+			if err := n.solana.WaitForConfirmation(ctx, *sig); err != nil {
+				return fmt.Errorf("failed to confirm connection transaction: %w", err)
+			}
+			log.Println("Transaction confirmed. Proceeding with P2P handshake...")
 		}
-		log.Println("Transaction confirmed. Proceeding with P2P handshake...")
+	} else {
+		// Real error fetching account
+		return fmt.Errorf("failed to check connection account status: %w", err)
 	}
 
 	// 3. Libp2p Connect
