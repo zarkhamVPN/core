@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"zarkham/core/storage"
+	solanago "github.com/gagliardetto/solana-go"
 	"github.com/libp2p/go-libp2p"
 	kaddht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -15,6 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/multiformats/go-multiaddr"
+	"golang.zx2c4.com/wireguard/wgctrl"
 )
 
 type Manager struct {
@@ -33,6 +35,32 @@ func NewManager(is *storage.IdentityStorage) *Manager {
 		storage:           is,
 		ipPool:            NewIPPoolManager("10.10.10.0"),
 		activeConnections: make(map[peer.ID]*WireGuardConnection),
+	}
+}
+
+func (m *Manager) CloseConnectionByWardenPDA(pda solanago.PublicKey) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for pid, conn := range m.activeConnections {
+		if conn.WardenPDA.Equals(pda) {
+			log.Printf("P2P: Closing connection to Warden PDA %s (Peer: %s)", pda, pid)
+			conn.Close()
+			delete(m.activeConnections, pid)
+			return nil
+		}
+	}
+	return fmt.Errorf("connection not found for warden PDA %s", pda)
+}
+
+func (m *Manager) CloseAllConnections() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for pid, conn := range m.activeConnections {
+		log.Printf("P2P: Closing connection to Peer %s", pid)
+		conn.Close()
+		delete(m.activeConnections, pid)
 	}
 }
 
@@ -110,6 +138,14 @@ func (m *Manager) Stop() error {
 		return nil
 	}
 
+	// 1. Cleanup active tunnels
+	for pid, conn := range m.activeConnections {
+		log.Printf("P2P: Closing connection to %s", pid)
+		conn.Close()
+	}
+	m.activeConnections = make(map[peer.ID]*WireGuardConnection)
+
+	// 2. Stop Services
 	if m.mdns != nil { m.mdns.Close() }
 	if m.dht != nil { m.dht.Close() }
 	if m.host != nil { m.host.Close() }
@@ -140,6 +176,40 @@ func (m *Manager) Status() NodeStatus {
 
 func (m *Manager) Host() host.Host {
 	return m.host
+}
+
+func (m *Manager) GetActiveTunnels() []peer.ID {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	ids := make([]peer.ID, 0, len(m.activeConnections))
+	for id := range m.activeConnections {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (m *Manager) GetTotalBandwidth() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	total := uint64(0)
+	for _, conn := range m.activeConnections {
+		rx, tx := conn.GetStats()
+		total += (rx + tx)
+	}
+	return total
+}
+
+func (m *Manager) IsTunnelInterfaceActive() bool {
+	client, err := wgctrl.New()
+	if err != nil {
+		return false
+	}
+	defer client.Close()
+
+	_, err = client.Device("arkhamwg0")
+	return err == nil
 }
 
 func (m *Manager) Connect(ctx context.Context, addr string) error {

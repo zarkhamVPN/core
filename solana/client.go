@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/programs/system"
 	"github.com/gagliardetto/solana-go/rpc"
 	"golang.org/x/crypto/sha3"
 )
@@ -261,8 +262,11 @@ func (c *Client) EndConnection(wardenPDA solana.PublicKey) (*solana.Signature, e
 		return nil, fmt.Errorf("failed to create EndConnection instruction: %w", err)
 	}
 
-	// Get latest blockhash
-	latestBlockhash, err := c.RpcClient.GetLatestBlockhash(context.Background(), rpc.CommitmentFinalized)
+	// Get latest blockhash with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	latestBlockhash, err := c.RpcClient.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get latest blockhash: %w", err)
 	}
@@ -289,8 +293,8 @@ func (c *Client) EndConnection(wardenPDA solana.PublicKey) (*solana.Signature, e
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	// Send transaction
-	sig, err := c.RpcClient.SendTransaction(context.Background(), tx)
+	// Send transaction with timeout
+	sig, err := c.RpcClient.SendTransaction(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send transaction: %w", err)
 	}
@@ -298,10 +302,23 @@ func (c *Client) EndConnection(wardenPDA solana.PublicKey) (*solana.Signature, e
 	return &sig, nil
 }
 
+func (c *Client) TransferSOL(recipient solana.PublicKey, lamports uint64) (*solana.Signature, error) {
+	ix := system.NewTransferInstruction(
+		lamports,
+		c.Signer.PublicKey(),
+		recipient,
+	).Build()
+
+	return c.sendTx([]solana.Instruction{ix})
+}
+
 // --- Utils ---
 
 func (c *Client) sendTx(instructions []solana.Instruction) (*solana.Signature, error) {
-	latest, err := c.RpcClient.GetLatestBlockhash(context.Background(), rpc.CommitmentFinalized)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	latest, err := c.RpcClient.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil { return nil, err }
 
 	tx, err := solana.NewTransaction(instructions, latest.Value.Blockhash, solana.TransactionPayer(c.Signer.PublicKey()))
@@ -313,7 +330,7 @@ func (c *Client) sendTx(instructions []solana.Instruction) (*solana.Signature, e
 	})
 	if err != nil { return nil, err }
 
-	sig, err := c.RpcClient.SendTransaction(context.Background(), tx)
+	sig, err := c.RpcClient.SendTransaction(ctx, tx)
 	if err != nil { return nil, err }
 
 	return &sig, nil
@@ -471,7 +488,9 @@ func (c *Client) ClaimEarnings(usePrivate bool) (*solana.Signature, error) {
 
 func (c *Client) FetchSeekerAccount() (*Seeker, error) {
 	pda, _, _ := GetSeekerPDA(c.Signer.PublicKey())
-	resp, err := c.RpcClient.GetAccountInfoWithOpts(context.Background(), pda, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentConfirmed})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := c.RpcClient.GetAccountInfoWithOpts(ctx, pda, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentConfirmed})
 	if err != nil || resp.Value == nil {
 		return &Seeker{Authority: c.Signer.PublicKey()}, nil
 	}
@@ -481,7 +500,9 @@ func (c *Client) FetchSeekerAccount() (*Seeker, error) {
 func (c *Client) IsWardenRegistered() (bool, error) {
 	pda, _, err := c.GetWardenPDA()
 	if err != nil { return false, err }
-	resp, err := c.RpcClient.GetAccountInfo(context.Background(), pda)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := c.RpcClient.GetAccountInfo(ctx, pda)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") { return false, nil }
 		return false, err
@@ -490,8 +511,10 @@ func (c *Client) IsWardenRegistered() (bool, error) {
 }
 
 func (c *Client) FetchAllWardens() ([]*Warden, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	resp, err := c.RpcClient.GetProgramAccountsWithOpts(
-		context.Background(),
+		ctx,
 		ProgramID,
 		&rpc.GetProgramAccountsOpts{
 			Filters: []rpc.RPCFilter{
@@ -530,8 +553,29 @@ func (c *Client) FetchWardenByPeerID(peerID string) (*Warden, error) {
 }
 
 func (c *Client) FetchMyConnections(profileType string) ([]*ConnectionResult, error) {
+	// 1. Derive the PDA we are filtering for
+	var userPDA solana.PublicKey
+	if profileType == "seeker" {
+		userPDA, _, _ = GetSeekerPDA(c.Signer.PublicKey())
+	} else {
+		userPDA, _, _ = c.GetWardenPDA()
+	}
+
+	// 2. Setup Filters
+	// Offset 0: Discriminator (8 bytes)
+	// Offset 8: Seeker PDA (32 bytes)
+	// Offset 40: Warden PDA (32 bytes)
+	memcmpOffset := 8
+	if profileType == "warden" {
+		memcmpOffset = 40
+	}
+
+	// 3. Set a strict timeout for the RPC call
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	resp, err := c.RpcClient.GetProgramAccountsWithOpts(
-		context.Background(),
+		ctx,
 		ProgramID,
 		&rpc.GetProgramAccountsOpts{
 			Filters: []rpc.RPCFilter{
@@ -539,6 +583,12 @@ func (c *Client) FetchMyConnections(profileType string) ([]*ConnectionResult, er
 					Memcmp: &rpc.RPCFilterMemcmp{
 						Offset: 0,
 						Bytes:  Account_Connection[:],
+					},
+				},
+				{
+					Memcmp: &rpc.RPCFilterMemcmp{
+						Offset: uint64(memcmpOffset),
+						Bytes:  userPDA.Bytes(),
 					},
 				},
 			},
@@ -549,34 +599,16 @@ func (c *Client) FetchMyConnections(profileType string) ([]*ConnectionResult, er
 	}
 
 	var results []*ConnectionResult
-	
-	// Derive the PDA we are filtering for
-	var userPDA solana.PublicKey
-	if profileType == "seeker" {
-		userPDA, _, _ = GetSeekerPDA(c.Signer.PublicKey())
-	} else {
-		userPDA, _, _ = c.GetWardenPDA()
-	}
-
 	for _, acc := range resp {
 		conn, err := manualUnmarshalConnection(acc.Account.Data.GetBinary())
 		if err != nil {
 			continue
 		}
 
-		match := false
-		if profileType == "seeker" && conn.Seeker.Equals(userPDA) {
-			match = true
-		} else if profileType == "warden" && conn.Warden.Equals(userPDA) {
-			match = true
-		}
-
-		if match {
-			results = append(results, &ConnectionResult{
-				PublicKey: acc.Pubkey,
-				Account:   *conn,
-			})
-		}
+		results = append(results, &ConnectionResult{
+			PublicKey: acc.Pubkey,
+			Account:   *conn,
+		})
 	}
 	return results, nil
 }

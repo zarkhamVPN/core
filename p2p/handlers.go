@@ -105,8 +105,10 @@ func (m *Manager) handleKeyExchange(s network.Stream, sc *solana.Client) {
 		return
 	}
 
-	// 6. Configure Routing
-	if err := vpn.SetupWardenRouting(ifaceName, seekerTunnelIP.String()); err != nil {
+	// 6. Configure Warden's Interface IP and Routing
+	// Assign the gateway IP to the Warden's interface
+	wardenGatewayIP := vpn.GetWardenGatewayIP(seekerTunnelIP)
+	if err := vpn.SetupWardenRouting(ifaceName, wardenGatewayIP, seekerTunnelIP.String()); err != nil {
 		log.Printf("VPN: Routing setup failed: %v", err)
 	}
 
@@ -137,13 +139,16 @@ func (m *Manager) handleKeyExchange(s network.Stream, sc *solana.Client) {
 		LocalKey:        privKey,
 		RemoteKey:       seekerWgKey,
 		StopChan:        make(chan struct{}),
+		IsWarden:        true,
+		SeekerIP:        seekerTunnelIP.String(),
 	}
 
 	m.mu.Lock()
 	m.activeConnections[remotePeer] = conn
 	m.mu.Unlock()
 
-	log.Printf("VPN: Session established with %s on %s", remotePeer, ifaceName)
+	log.Printf("VPN: Session established with %s on %s (Gateway: %s, Seeker: %s)", 
+		remotePeer, ifaceName, wardenGatewayIP, seekerAllowedIP)
 }
 
 func (m *Manager) handleBandwidth(s network.Stream, sc *solana.Client) {

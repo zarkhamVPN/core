@@ -36,15 +36,20 @@ func SetupInterface(name string, privKey wgtypes.Key, port int) (*wgctrl.Client,
 		return nil, err
 	}
 
+	fwmark := 51820
 	cfg := wgtypes.Config{
-		PrivateKey: &privKey,
-		ListenPort: &port,
+		PrivateKey:   &privKey,
+		ListenPort:   &port,
+		FirewallMark: &fwmark,
 	}
 
 	if err := client.ConfigureDevice(name, cfg); err != nil {
 		client.Close()
 		return nil, err
 	}
+
+	// Set MTU to account for WireGuard overhead (1420 is standard)
+	_ = exec.Command("ip", "link", "set", name, "mtu", "1420").Run()
 
 	if err := exec.Command("ip", "link", "set", name, "up").Run(); err != nil {
 		client.Close()

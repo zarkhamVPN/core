@@ -1,6 +1,8 @@
 package p2p
 
 import (
+	"zarkham/core/vpn"
+
 	"github.com/gagliardetto/solana-go"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -42,7 +44,7 @@ type WireGuardConnection struct {
 	SeekerPeerID    peer.ID
 	WardenPeerID    peer.ID
 	SeekerAuthority solana.PublicKey
-	WardenAuthority solana.PublicKey
+	WardenPDA       solana.PublicKey
 	ConnectionPDA   solana.PublicKey
 	Interface       *wgctrl.Client
 	InterfaceName   string
@@ -50,6 +52,46 @@ type WireGuardConnection struct {
 	RemoteKey       wgtypes.Key
 	StopChan        chan struct{}
 	AttestedBytes   uint64
+	IsWarden        bool
+	SeekerIP        string
+}
+
+func (c *WireGuardConnection) Close() {
+	if c.Interface != nil {
+		if c.IsWarden {
+			vpn.TeardownWardenRouting(c.InterfaceName, c.SeekerIP)
+		} else {
+			vpn.TeardownRouting(c.InterfaceName)
+		}
+		c.Interface.Close()
+	}
+}
+
+func (c *WireGuardConnection) GetStats() (uint64, uint64) {
+	if c.Interface == nil { return 0, 0 }
+	dev, err := c.Interface.Device(c.InterfaceName)
+	if err != nil { return 0, 0 }
+	
+	totalRx := uint64(0)
+	totalTx := uint64(0)
+	for _, p := range dev.Peers {
+		if p.PublicKey == c.RemoteKey {
+			totalRx += uint64(p.ReceiveBytes)
+			totalTx += uint64(p.TransmitBytes)
+		}
+	}
+	return totalRx, totalTx
+}
+
+// BandwidthProofRequest is sent from warden to seeker to request a signature for data consumed
+type BandwidthProofRequest struct {
+	MbConsumed uint64 `json:"mb_consumed"`
+	Timestamp  int64  `json:"timestamp"`
+}
+
+// BandwidthProofResponse is sent from seeker back to warden with the signature
+type BandwidthProofResponse struct {
+	Signature string `json:"signature"` // Base58 encoded solana.Signature
 }
 
 // NodeStatus represents the current state of the P2P node

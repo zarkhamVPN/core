@@ -8,12 +8,13 @@ import (
 
 	"zarkham/core/vpn"
 
+	solanago "github.com/gagliardetto/solana-go"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // RequestTunnel initiates the VPN handshake with a remote Warden.
-func (m *Manager) RequestTunnel(ctx context.Context, remotePID peer.ID, seekerAuthority string) error {
+func (m *Manager) RequestTunnel(ctx context.Context, remotePID peer.ID, seekerAuthority string, wardenPDA solanago.PublicKey) error {
 	// 1. Generate Local WireGuard Keys
 	privKey, pubKey, err := vpn.GenerateKeyPair()
 	if err != nil {
@@ -74,6 +75,22 @@ func (m *Manager) RequestTunnel(ctx context.Context, remotePID peer.ID, seekerAu
 	if err := vpn.SetupSeekerRouting(ifaceName, resp.SeekerAllowedIP); err != nil {
 		return fmt.Errorf("failed to setup system routing: %w", err)
 	}
+
+	// 8. Track Connection
+	conn := &WireGuardConnection{
+		SeekerPeerID:    m.host.ID(),
+		WardenPeerID:    remotePID,
+		WardenPDA:       wardenPDA,
+		Interface:       wgClient,
+		InterfaceName:   ifaceName,
+		LocalKey:        privKey,
+		RemoteKey:       wardenWgKey,
+		StopChan:        make(chan struct{}),
+	}
+
+	m.mu.Lock()
+	m.activeConnections[remotePID] = conn
+	m.mu.Unlock()
 
 	log.Printf("VPN: Tunnel established on %s", ifaceName)
 	return nil
