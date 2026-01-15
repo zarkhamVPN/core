@@ -54,6 +54,13 @@ type WireGuardConnection struct {
 	AttestedBytes   uint64
 	IsWarden        bool
 	SeekerIP        string
+
+	// BC Protocol Fields
+	CertBuffer     []ThroughputCertificate
+	SequenceCount  uint64
+	LastStatsRx    uint64
+	LastStatsTx    uint64
+	CumulativeMB   uint64
 }
 
 func (c *WireGuardConnection) Close() {
@@ -83,15 +90,30 @@ func (c *WireGuardConnection) GetStats() (uint64, uint64) {
 	return totalRx, totalTx
 }
 
-// BandwidthProofRequest is sent from warden to seeker to request a signature for data consumed
-type BandwidthProofRequest struct {
-	MbConsumed uint64 `json:"mb_consumed"`
-	Timestamp  int64  `json:"timestamp"`
+// ThroughputCertificate represents a verified data claim for a 5-second interval
+type ThroughputCertificate struct {
+	SeekerAuthority   solana.PublicKey `json:"seeker_authority"`
+	WardenAuthority   solana.PublicKey `json:"warden_authority"`
+	ConnectionPDA     solana.PublicKey `json:"connection_pda"`
+	CumulativeMB      uint64           `json:"cumulative_mb"`
+	BytesThisInterval uint64           `json:"bytes_this_interval"`
+	Timestamp         int64            `json:"timestamp"`
+	SequenceNumber    uint64           `json:"sequence_number"`
+	SeekerSignature   [64]byte         `json:"seeker_signature"`
+	WardenSignature   [64]byte         `json:"warden_signature"`
 }
 
-// BandwidthProofResponse is sent from seeker back to warden with the signature
-type BandwidthProofResponse struct {
-	Signature string `json:"signature"` // Base58 encoded solana.Signature
+// BatchedCertificate is sent from seeker to warden every minute
+type BatchedCertificate struct {
+	Certificates []ThroughputCertificate `json:"certificates"`
+	BatchID      uint64                  `json:"batch_id"`
+}
+
+// P2PBandwidthAck is sent from warden back to seeker
+type P2PBandwidthAck struct {
+	AcceptedCerts    []uint64   `json:"accepted_certs"`
+	WardenSignatures [][64]byte `json:"warden_signatures"`
+	LastSubmittedSeq uint64     `json:"last_submitted_seq"`
 }
 
 // NodeStatus represents the current state of the P2P node

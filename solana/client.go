@@ -112,7 +112,9 @@ func (c *Client) FetchWardenAccount() (warden *Warden, err error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.RpcClient.GetAccountInfoWithOpts(context.Background(), pda, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentConfirmed})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := c.RpcClient.GetAccountInfoWithOpts(ctx, pda, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentConfirmed})
 	if err != nil {
 		return nil, err
 	}

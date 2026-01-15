@@ -152,6 +152,51 @@ func (m *Manager) handleKeyExchange(s network.Stream, sc *solana.Client) {
 }
 
 func (m *Manager) handleBandwidth(s network.Stream, sc *solana.Client) {
+	remotePeer := s.Conn().RemotePeer()
+	log.Printf("VPN: Bandwidth proof request from %s", remotePeer)
+
+	var req BandwidthProofRequest
+	if err := json.NewDecoder(s).Decode(&req); err != nil {
+		log.Printf("VPN: Failed to decode proof request: %v", err)
+		return
+	}
+
+	// 1. Verify MB against Local Stats
+	m.mu.Lock()
+	conn, exists := m.activeConnections[remotePeer]
+	m.mu.Unlock()
+
+	if !exists {
+		log.Printf("VPN: Received proof request for unknown connection from %s", remotePeer)
+		return
+	}
+
+	rx, tx := conn.GetStats()
+	localMb := (rx + tx) / 1024 / 1024
+	
+	// Allow 5% margin for overhead/timing differences
+	if req.MbConsumed > uint64(float64(localMb)*1.05)+1 {
+		log.Printf("VPN: REJECTED proof request. Warden claims %d MB, Seeker local is %d MB", req.MbConsumed, localMb)
+		return
+	}
+
+	// 2. Generate Seeker's Signature
+	sig, err := sc.GenerateBandwidthProofSignature(conn.WardenPDA, req.MbConsumed, req.Timestamp)
+	if err != nil {
+		log.Printf("VPN: Failed to sign bandwidth proof: %v", err)
+		return
+	}
+
+	// 2. Send Response
+	resp := BandwidthProofResponse{
+		Signature: sig.String(),
+	}
+
+	if err := json.NewEncoder(s).Encode(resp); err != nil {
+		log.Printf("VPN: Failed to send proof response: %v", err)
+	}
+	
+	log.Printf("VPN: Bandwidth proof signed and returned to %s (%d MB)", remotePeer, req.MbConsumed)
 }
 
 func pingHandler(s network.Stream) {

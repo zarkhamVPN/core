@@ -80,18 +80,20 @@ func (m *Manager) RequestTunnel(ctx context.Context, remotePID peer.ID, seekerAu
 	conn := &WireGuardConnection{
 		SeekerPeerID:    m.host.ID(),
 		WardenPeerID:    remotePID,
+		SeekerAuthority: solanago.MustPublicKeyFromBase58(seekerAuthority),
 		WardenPDA:       wardenPDA,
 		Interface:       wgClient,
 		InterfaceName:   ifaceName,
 		LocalKey:        privKey,
 		RemoteKey:       wardenWgKey,
 		StopChan:        make(chan struct{}),
+		IsWarden:        false,
 	}
 
 	m.mu.Lock()
 	m.activeConnections[remotePID] = conn
 	m.mu.Unlock()
 
-	log.Printf("VPN: Tunnel established on %s", ifaceName)
+	log.Println("VPN: Tunnel established on", ifaceName)
 	return nil
 }
