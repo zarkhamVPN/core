@@ -30,6 +30,7 @@ type KeyExchangeResponse struct {
 	Endpoint           string `json:"endpoint"` // Warden's public IP and port
 	WardenAllowedIP    string `json:"warden_allowed_ip"`
 	SeekerAllowedIP    string `json:"seeker_allowed_ip"`
+	Timestamp          int64  `json:"timestamp"` // Added for clock synchronization
 }
 
 // PeerInfo holds detailed information about a discovered peer
@@ -44,6 +45,7 @@ type WireGuardConnection struct {
 	SeekerPeerID    peer.ID
 	WardenPeerID    peer.ID
 	SeekerAuthority solana.PublicKey
+	WardenAuthority solana.PublicKey // Added: Required for correct signing
 	WardenPDA       solana.PublicKey
 	ConnectionPDA   solana.PublicKey
 	Interface       *wgctrl.Client
@@ -56,11 +58,13 @@ type WireGuardConnection struct {
 	SeekerIP        string
 
 	// BC Protocol Fields
-	CertBuffer     []ThroughputCertificate
-	SequenceCount  uint64
-	LastStatsRx    uint64
-	LastStatsTx    uint64
-	CumulativeMB   uint64
+	ClockOffset       int64 // WardenTime - LocalTime
+	CertBuffer        []ThroughputCertificate
+	SequenceCount     uint64
+	LastStatsRx       uint64
+	LastStatsTx       uint64
+	LastAttestedBytes uint64 // Added: Total bytes handled in previous TCs
+	CumulativeMB      uint64
 }
 
 func (c *WireGuardConnection) Close() {
@@ -111,9 +115,10 @@ type BatchedCertificate struct {
 
 // P2PBandwidthAck is sent from warden back to seeker
 type P2PBandwidthAck struct {
-	AcceptedCerts    []uint64   `json:"accepted_certs"`
-	WardenSignatures [][64]byte `json:"warden_signatures"`
-	LastSubmittedSeq uint64     `json:"last_submitted_seq"`
+	AcceptedCerts      []uint64   `json:"accepted_certs"`
+	WardenSignatures   [][64]byte `json:"warden_signatures"`
+	LastSubmittedSeq   uint64     `json:"last_submitted_seq"`
+	CurrentClusterTime int64      `json:"current_cluster_time"` // Added for continuous sync
 }
 
 // NodeStatus represents the current state of the P2P node

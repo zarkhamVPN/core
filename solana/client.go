@@ -16,17 +16,121 @@ import (
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/system"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"golang.org/x/crypto/sha3"
 )
 
 var AssociatedTokenProgramID = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 var Ed25519ProgramID = solana.MustPublicKeyFromBase58("Ed25519SigVerify111111111111111111111111111")
+var ComputeBudgetProgramID = solana.MustPublicKeyFromBase58("ComputeBudget111111111111111111111111111111")
 
-// Devnet Addresses:
 var (
 	DevnetUsdcMint = solana.MustPublicKeyFromBase58("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
 	DevnetUsdtMint = solana.MustPublicKeyFromBase58("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
 )
+
+const ConfigServerURL = "https://api.zarkham.xyz/api/v1/config"
+
+type ConfigResponse struct {
+	RpcEndpoint string `json:"rpc_endpoint"`
+	BackupRpc   string `json:"backup_rpc"`
+}
+
+func FetchRemoteRPCConfig(privKey solana.PrivateKey) (string, error) {
+	// 1. Generate Auth Headers
+	ts := time.Now().Unix()
+	msg := fmt.Sprintf("zarkham-auth-%d", ts)
+	
+	sig, err := privKey.Sign([]byte(msg))
+	if err != nil {
+		return "", fmt.Errorf("failed to sign auth message: %w", err)
+	}
+
+	req, err := http.NewRequest("GET", ConfigServerURL, nil)
+	if err != nil { return "", err }
+	
+	req.Header.Set("X-Auth-Pubkey", privKey.PublicKey().String())
+	req.Header.Set("X-Auth-Sig", sig.String())
+	req.Header.Set("X-Auth-Ts", fmt.Sprintf("%d", ts))
+	
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil { return "", err }
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("config server error: %d", resp.StatusCode)
+	}
+
+	var cfg ConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+		return "", err
+	}
+
+	return cfg.RpcEndpoint, nil
+}
+
+var GlobalClockOffset int64
+
+type SignedTransport struct {
+	Transport http.RoundTripper
+	PrivKey   solana.PrivateKey
+}
+
+func (t *SignedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Only sign requests to our proxy
+	if strings.Contains(req.URL.Host, "zarkham") {
+		ts := time.Now().Unix() + GlobalClockOffset
+		msg := fmt.Sprintf("zarkham-auth-%d", ts)
+		
+		sig, err := t.PrivKey.Sign([]byte(msg))
+		if err != nil {
+			return nil, fmt.Errorf("signing failed: %w", err)
+		}
+
+		// Also attach as query params for RPC libs that don't support custom headers easily
+		q := req.URL.Query()
+		q.Add("pubkey", t.PrivKey.PublicKey().String())
+		q.Add("sig", sig.String())
+		q.Add("ts", fmt.Sprintf("%d", ts))
+		req.URL.RawQuery = q.Encode()
+
+		// And headers for good measure
+		req.Header.Set("X-Auth-Pubkey", t.PrivKey.PublicKey().String())
+		req.Header.Set("X-Auth-Sig", sig.String())
+		req.Header.Set("X-Auth-Ts", fmt.Sprintf("%d", ts))
+	}
+
+	resp, err := t.Transport.RoundTrip(req)
+	if err == nil && resp != nil {
+		// Extract Solana Time from header to maintain sync
+		if solTimeStr := resp.Header.Get("X-Solana-Time"); solTimeStr != "" {
+			if st, parseErr := strconv.ParseInt(solTimeStr, 10, 64); parseErr == nil {
+				GlobalClockOffset = st - time.Now().Unix()
+			}
+		}
+	}
+	return resp, err
+}
+
+var globalSessionWallet *solana.Wallet
+
+func InitGlobalAuth() {
+	if globalSessionWallet == nil {
+		globalSessionWallet = solana.NewWallet()
+		
+		// Spawn background time-healing loop
+		go func() {
+			sc, _ := NewReadOnlyClient(ConfigServerURL) // Use proxy endpoint
+			for {
+				if ts, err := sc.GetSysvarClockTime(context.Background()); err == nil {
+					GlobalClockOffset = ts - time.Now().Unix()
+				}
+				time.Sleep(30 * time.Second)
+			}
+		}()
+	}
+}
 
 // Client is a client for the Zarkham Protocol.
 type Client struct {
@@ -36,22 +140,49 @@ type Client struct {
 
 // NewClient creates a new Client for the Zarkham Protocol.
 func NewClient(rpcEndpoint string, signer solana.PrivateKey) (*Client, error) {
+	InitGlobalAuth()
+	
+	opts := &jsonrpc.RPCClientOpts{
+		HTTPClient: &http.Client{
+			Transport: &SignedTransport{
+				Transport: http.DefaultTransport,
+				PrivKey:   globalSessionWallet.PrivateKey,
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	rpcClient := rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(rpcEndpoint, opts))
+
 	return &Client{
-		RpcClient: rpc.New(rpcEndpoint),
+		RpcClient: rpcClient,
 		Signer:    signer,
 	}, nil
 }
 
 // NewReadOnlyClient creates a new client for read-only operations.
 func NewReadOnlyClient(rpcEndpoint string) (*Client, error) {
+	InitGlobalAuth()
 	dummyWallet := solana.NewWallet()
+
+	opts := &jsonrpc.RPCClientOpts{
+		HTTPClient: &http.Client{
+			Transport: &SignedTransport{
+				Transport: http.DefaultTransport,
+				PrivKey:   globalSessionWallet.PrivateKey,
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	rpcClient := rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(rpcEndpoint, opts))
+
 	return &Client{
-		RpcClient: rpc.New(rpcEndpoint),
+		RpcClient: rpcClient,
 		Signer:    dummyWallet.PrivateKey,
 	}, nil
 }
 
-// --- PDA Helpers ---
 
 func (c *Client) GetProtocolConfigPDA() (solana.PublicKey, uint8, error) {
 	return solana.FindProgramAddress([][]byte{[]byte("protocol_config")}, ProgramID)
@@ -85,7 +216,6 @@ func (c *Client) GetUsdtVaultATA(solVaultPDA solana.PublicKey) (solana.PublicKey
 	return solana.FindAssociatedTokenAddress(solVaultPDA, DevnetUsdtMint)
 }
 
-// --- Account Fetchers ---
 
 func (c *Client) FetchProtocolConfig() (*ProtocolConfig, error) {
 	pda, _, err := c.GetProtocolConfigPDA()
@@ -124,7 +254,6 @@ func (c *Client) FetchWardenAccount() (warden *Warden, err error) {
 	return ParseAccount_Warden(resp.Value.Data.GetBinary())
 }
 
-// --- Instructions ---
 
 func (c *Client) InitializeWarden(stakeToken StakeToken, stakeAmount uint64, peerId string, regionCode uint8, ipHash [32]uint8) (*solana.Signature, error) {
 	// 1. Fetch Oracle Price
@@ -314,15 +443,40 @@ func (c *Client) TransferSOL(recipient solana.PublicKey, lamports uint64) (*sola
 	return c.sendTx([]solana.Instruction{ix})
 }
 
-// --- Utils ---
 
 func (c *Client) sendTx(instructions []solana.Instruction) (*solana.Signature, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	latest, err := c.RpcClient.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil { return nil, err }
 
+	// 1. Simulation Phase
+	// We build a temp tx just to measure CU
+	simTx, err := solana.NewTransaction(instructions, latest.Value.Blockhash, solana.TransactionPayer(c.Signer.PublicKey()))
+	if err == nil {
+		// Mock sign for simulation (doesn't need to be valid signature, just present)
+		// But for accuracy we sign properly
+		simTx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+			if c.Signer.PublicKey().Equals(key) { return &c.Signer }
+			return nil
+		})
+		
+		simRes, err := c.RpcClient.SimulateTransaction(ctx, simTx)
+		if err == nil && simRes.Value.Err == nil && simRes.Value.UnitsConsumed != nil {
+			// 2. Optimization Phase
+			// Add buffer
+			cuLimit := uint32(*simRes.Value.UnitsConsumed + 5000)
+			
+			// Prepend CU instructions
+			cuLimitIx := NewSetComputeUnitLimitInstruction(cuLimit)
+			cuPriceIx := NewSetComputeUnitPriceInstruction(1000) // 1000 micro-lamports priority
+			
+			instructions = append([]solana.Instruction{cuLimitIx, cuPriceIx}, instructions...)
+		}
+	}
+
+	// 3. Execution Phase
 	tx, err := solana.NewTransaction(instructions, latest.Value.Blockhash, solana.TransactionPayer(c.Signer.PublicKey()))
 	if err != nil { return nil, err }
 
@@ -338,8 +492,49 @@ func (c *Client) sendTx(instructions []solana.Instruction) (*solana.Signature, e
 	return &sig, nil
 }
 
+func (c *Client) GetSysvarClockTime(ctx context.Context) (int64, error) {
+	// Clock Sysvar Pubkey
+	clockPubkey := solana.MustPublicKeyFromBase58("SysvarC1ock11111111111111111111111111111111")
+	
+	resp, err := c.RpcClient.GetAccountInfo(ctx, clockPubkey)
+	if err != nil { return 0, err }
+	if resp.Value == nil { return 0, fmt.Errorf("clock sysvar not found") }
+
+	data := resp.Value.Data.GetBinary()
+	if len(data) < 16 { return 0, fmt.Errorf("clock data too short") }
+
+	// Layout: [Slot (8) | TS (8) | Epoch (8) | ...]
+	// We skip the slot (8 bytes) and read the unix_timestamp (8 bytes)
+	ts := int64(binary.LittleEndian.Uint64(data[8:16]))
+	return ts, nil
+}
+
+func (c *Client) GetClusterTime(ctx context.Context) (int64, error) {
+	// 1. Get current slot from 'confirmed' state
+	slot, err := c.RpcClient.GetSlot(ctx, rpc.CommitmentConfirmed)
+	if err != nil { return 0, err }
+	
+	// 2. Try to get block time for this exact slot
+	ts, err := c.RpcClient.GetBlockTime(ctx, slot)
+	if err == nil && ts != nil {
+		return int64(*ts), nil
+	}
+
+	// 3. Fallback: Search backwards for the most recent valid block time (up to 50 slots)
+	for i := uint64(1); i < 50; i++ {
+		ts, err := c.RpcClient.GetBlockTime(ctx, slot-i)
+		if err == nil && ts != nil {
+			return int64(*ts), nil
+		}
+	}
+	
+	return 0, fmt.Errorf("could not find a recent block with time")
+}
+
 func (c *Client) GetBalance(pk solana.PublicKey) (uint64, error) {
-	balance, err := c.RpcClient.GetBalance(context.Background(), pk, rpc.CommitmentFinalized)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	balance, err := c.RpcClient.GetBalance(ctx, pk, rpc.CommitmentFinalized)
 	if err != nil {
 		return 0, err
 	}
@@ -350,7 +545,7 @@ func (c *Client) GetBalance(pk solana.PublicKey) (uint64, error) {
 func (c *Client) SubmitBandwidthProof(
 	mbConsumed uint64,
 	seekerPublicKey solana.PublicKey,
-	seekerSignature solana.Signature,
+	seekerSignature [64]byte,
 	timestamp int64,
 ) (*solana.Signature, error) {
 	wardenPublicKey := c.Signer.PublicKey()
@@ -359,6 +554,7 @@ func (c *Client) SubmitBandwidthProof(
 	connectionPDA, _, _ := GetConnectionPDA(seekerPDA, wardenPDA)
 	protocolConfigPDA, _, _ := c.GetProtocolConfigPDA()
 
+	// Reconstruct the message hash (MUST match seeker's exactly)
 	msgBuffer := new(bytes.Buffer)
 	msgBuffer.Write(connectionPDA.Bytes())
 	binary.Write(msgBuffer, binary.LittleEndian, mbConsumed)
@@ -368,14 +564,18 @@ func (c *Client) SubmitBandwidthProof(
 	hasher.Write(msgBuffer.Bytes())
 	messageHash := hasher.Sum(nil)
 
-	wardenSignature, _ := c.Signer.Sign(messageHash)
+	// Warden signs the same message hash
+	wardenSignature, err := c.Signer.Sign(messageHash)
+	if err != nil {
+		return nil, fmt.Errorf("warden failed to sign proof: %w", err)
+	}
 
 	// Build Ed25519 instructions
 	sigOffset := uint16(16)
 	pkOffset := sigOffset + 64
 	msgOffset := pkOffset + 32
 
-	// Seeker Sig
+	// Seeker Sig Instruction
 	seekerSigIxData := new(bytes.Buffer)
 	seekerSigIxData.WriteByte(1)
 	seekerSigIxData.WriteByte(0)
@@ -392,7 +592,7 @@ func (c *Client) SubmitBandwidthProof(
 
 	seekerSigIx := solana.NewInstruction(Ed25519ProgramID, nil, seekerSigIxData.Bytes())
 
-	// Warden Sig
+	// Warden Sig Instruction
 	wardenSigIxData := new(bytes.Buffer)
 	wardenSigIxData.WriteByte(1)
 	wardenSigIxData.WriteByte(0)
@@ -410,7 +610,7 @@ func (c *Client) SubmitBandwidthProof(
 	wardenSigIx := solana.NewInstruction(Ed25519ProgramID, nil, wardenSigIxData.Bytes())
 
 	submitIx, err := NewSubmitBandwidthProofInstruction(
-		mbConsumed, timestamp, seekerSignature, wardenSignature,
+		mbConsumed, timestamp, solana.Signature(seekerSignature), wardenSignature,
 		connectionPDA, wardenPDA, seekerPDA, protocolConfigPDA,
 		solana.SysVarInstructionsPubkey, c.Signer.PublicKey(),
 	)
@@ -647,19 +847,6 @@ func manualUnmarshalConnection(data []byte) (*Connection, error) {
 	return c, nil
 }
 
-func (c *Client) FetchConnectionAccount(pda solana.PublicKey) (*Connection, error) {
-	resp, err := c.RpcClient.GetAccountInfoWithOpts(context.Background(), pda, &rpc.GetAccountInfoOpts{
-		Commitment: rpc.CommitmentConfirmed,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if resp.Value == nil {
-		return nil, fmt.Errorf("connection account not found")
-	}
-	return ParseAccount_Connection(resp.Value.Data.GetBinary())
-}
-
 func manualUnmarshalWarden(data []byte) (*Warden, error) {
 	if len(data) < 8 { return nil, fmt.Errorf("too short") }
 	offset := 8
@@ -669,6 +856,11 @@ func manualUnmarshalWarden(data []byte) (*Warden, error) {
 	
 	l := binary.LittleEndian.Uint32(data[offset : offset+4])
 	offset += 4
+	
+	if offset+int(l) > len(data) {
+		return nil, fmt.Errorf("peer id length %d exceeds data remaining", l)
+	}
+
 	w.PeerId = string(data[offset : offset+int(l)])
 	offset += int(l)
 	
@@ -685,6 +877,20 @@ func manualUnmarshalWarden(data []byte) (*Warden, error) {
 
 	// Skip option check for brevity in porting, or implement full logic
 	return w, nil
+}
+
+func NewSetComputeUnitLimitInstruction(limit uint32) solana.Instruction {
+	data := make([]byte, 5)
+	data[0] = 0x02
+	binary.LittleEndian.PutUint32(data[1:], limit)
+	return solana.NewInstruction(ComputeBudgetProgramID, nil, data)
+}
+
+func NewSetComputeUnitPriceInstruction(microLamports uint64) solana.Instruction {
+	data := make([]byte, 9)
+	data[0] = 0x03
+	binary.LittleEndian.PutUint64(data[1:], microLamports)
+	return solana.NewInstruction(ComputeBudgetProgramID, nil, data)
 }
 
 func (c *Client) WaitForConfirmation(ctx context.Context, sig solana.Signature) error {
@@ -707,4 +913,17 @@ func (c *Client) WaitForConfirmation(ctx context.Context, sig solana.Signature) 
 			}
 		}
 	}
+}
+
+func (c *Client) FetchConnectionAccount(pda solana.PublicKey) (*Connection, error) {
+	resp, err := c.RpcClient.GetAccountInfoWithOpts(context.Background(), pda, &rpc.GetAccountInfoOpts{
+		Commitment: rpc.CommitmentConfirmed,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Value == nil {
+		return nil, fmt.Errorf("connection account not found")
+	}
+	return ParseAccount_Connection(resp.Value.Data.GetBinary())
 }

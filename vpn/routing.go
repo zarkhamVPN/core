@@ -2,11 +2,12 @@ package vpn
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/exec"
 	"strings"
+
+	"zarkham/core/logger"
 )
 
 const resolvConfPath = "/etc/resolv.conf"
@@ -59,13 +60,13 @@ func isServiceActive(serviceName string) bool {
 }
 
 func SetupWardenRouting(ifaceName, wardenIP, seekerIP string) error {
-	log.Printf("VPN: Setting up Warden routing for %s (Warden IP: %s, Seeker IP: %s)", 
+	logger.VPN("Setting up Warden routing for %s (Warden IP: %s, Seeker IP: %s)", 
 		ifaceName, wardenIP, seekerIP)
 	
 	// Use /24 for the interface IP so it sees the seeker as local
 	ipNoMask := strings.Split(wardenIP, "/")[0]
 	if err := runCommand("ip", "addr", "add", ipNoMask+"/24", "dev", ifaceName); err != nil {
-		log.Printf("Warning: Could not assign IP to %s: %v", ifaceName, err)
+		logger.Warn("VPN", "Could not assign IP to %s: %v", ifaceName, err)
 	}
 
 	_ = runCommand("ip", "link", "set", ifaceName, "up")
@@ -79,11 +80,11 @@ func SetupWardenRouting(ifaceName, wardenIP, seekerIP string) error {
 }
 
 func SetupSeekerRouting(ifaceName, seekerIP string) error {
-	log.Printf("VPN: Setting up Seeker routing. Interface: %s, IP: %s", ifaceName, seekerIP)
+	logger.VPN("Setting up Seeker routing. Interface: %s, IP: %s", ifaceName, seekerIP)
 	
 	// 1. Assign local tunnel IP
 	if err := runCommand("ip", "addr", "add", seekerIP, "dev", ifaceName); err != nil {
-		log.Printf("Warning: Could not assign IP to %s: %v", ifaceName, err)
+		logger.Warn("VPN", "Could not assign IP to %s: %v", ifaceName, err)
 	}
 
 	if err := runCommand("ip", "link", "set", ifaceName, "up"); err != nil {
@@ -104,7 +105,7 @@ func SetupSeekerRouting(ifaceName, seekerIP string) error {
 }
 
 func TeardownRouting(ifaceName string) {
-	log.Printf("VPN: Tearing down routing for %s", ifaceName)
+	logger.VPN("Tearing down routing for %s", ifaceName)
 	
 	_ = runCommand("ip", "rule", "del", "pref", "100")
 	_ = runCommand("ip", "rule", "del", "pref", "200")
@@ -124,11 +125,11 @@ func TeardownRouting(ifaceName string) {
 }
 
 func configureDNS(ifaceName string) error {
-	log.Printf("VPN: Configuring DNS for %s", ifaceName)
+	logger.VPN("Configuring DNS for %s", ifaceName)
 	dnsServers := []string{"1.1.1.1", "1.0.0.1"}
 	manager := detectDNSManager()
 	
-	log.Printf("VPN: Detected DNS manager: %v", manager)
+	logger.VPN("Detected DNS manager: %v", manager)
 
 	switch manager {
 	case DNSManagerSystemdResolved:
@@ -137,7 +138,7 @@ func configureDNS(ifaceName string) error {
 		if err := configureDNSOpenresolv(ifaceName, dnsServers); err == nil {
 			return nil
 		}
-		log.Printf("Warning: openresolv failed, falling back to direct /etc/resolv.conf")
+		logger.Warn("VPN", "openresolv failed, falling back to direct /etc/resolv.conf")
 		fallthrough
 	default:
 		return overwriteResolvConf(dnsServers)
@@ -172,7 +173,7 @@ func configureDNSOpenresolv(ifaceName string, dnsServers []string) error {
 }
 
 func overwriteResolvConf(dnsServers []string) error {
-	log.Printf("VPN: Using direct /etc/resolv.conf modification (last resort)")
+	logger.VPN("Using direct /etc/resolv.conf modification (last resort)")
 	if _, err := os.Stat(resolvConfBackup); os.IsNotExist(err) {
 		// Use cp for more reliable permission handling
 		_ = exec.Command("sudo", "cp", resolvConfPath, resolvConfBackup).Run()
@@ -189,7 +190,7 @@ func overwriteResolvConf(dnsServers []string) error {
 
 // TeardownWardenRouting cleans up Warden-specific routing
 func TeardownWardenRouting(ifaceName, seekerIP string) {
-	log.Printf("VPN: Tearing down Warden routing for %s (Seeker: %s)", ifaceName, seekerIP)
+	logger.VPN("Tearing down Warden routing for %s (Seeker: %s)", ifaceName, seekerIP)
 	
 	// Remove iptables rules for this specific Seeker
 	_ = runCommand("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", seekerIP, "-j", "MASQUERADE")
@@ -201,11 +202,11 @@ func TeardownWardenRouting(ifaceName, seekerIP string) {
 
 func restoreResolvConf() {
 	if _, err := os.Stat(resolvConfBackup); err == nil {
-		log.Println("VPN: Restoring original /etc/resolv.conf from backup")
+		logger.VPN("Restoring original /etc/resolv.conf from backup")
 		err := exec.Command("sudo", "cp", resolvConfBackup, resolvConfPath).Run()
 		if err == nil {
 			_ = exec.Command("sudo", "rm", resolvConfBackup).Run()
-			log.Println("VPN: DNS restoration successful.")
+			logger.VPN("DNS restoration successful.")
 		}
 	}
 }

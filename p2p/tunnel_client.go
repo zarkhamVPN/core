@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"time"
 
+	"zarkham/core/logger"
+	"zarkham/core/solana"
 	"zarkham/core/vpn"
 
 	solanago "github.com/gagliardetto/solana-go"
@@ -13,22 +15,22 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// RequestTunnel initiates the VPN handshake with a remote Warden.
-func (m *Manager) RequestTunnel(ctx context.Context, remotePID peer.ID, seekerAuthority string, wardenPDA solanago.PublicKey) error {
-	// 1. Generate Local WireGuard Keys
+func (m *Manager) RequestTunnel(ctx context.Context, remotePID peer.ID, seekerAuthority string, wardenPDA solanago.PublicKey, wardenAuthority solanago.PublicKey) error {
+	logger.P2P("Opening stream to Warden %s for handshake...", remotePID)
+	
 	privKey, pubKey, err := vpn.GenerateKeyPair()
 	if err != nil {
 		return fmt.Errorf("failed to generate wg keys: %w", err)
 	}
 
-	// 2. Open Stream to Warden
 	stream, err := m.host.NewStream(ctx, remotePID, ProtocolKeyExchange)
 	if err != nil {
 		return fmt.Errorf("failed to open stream: %w", err)
 	}
 	defer stream.Close()
 
-	// 3. Send Handshake Request
+	logger.P2P("Handshake stream opened. Sending keys...")
+
 	req := KeyExchangeRequest{
 		WireGuardPublicKey: pubKey.String(),
 		SeekerAuthority:    seekerAuthority,
@@ -37,19 +39,23 @@ func (m *Manager) RequestTunnel(ctx context.Context, remotePID peer.ID, seekerAu
 		return fmt.Errorf("failed to send handshake request: %w", err)
 	}
 
-	log.Printf("VPN: Sent tunnel request to %s (My PubKey: %s)", remotePID, pubKey.String())
+	logger.P2P("Keys sent. Waiting for Warden response...")
 
-	// 4. Receive Handshake Response
 	var resp KeyExchangeResponse
 	if err := json.NewDecoder(stream).Decode(&resp); err != nil {
 		return fmt.Errorf("failed to read handshake response: %w", err)
 	}
 
-	log.Printf("VPN: Handshake successful! Warden Endpoint: %s, AllowedIP: %s", resp.Endpoint, resp.SeekerAllowedIP)
+	logger.Success("VPN", "Handshake successful! Warden Endpoint: %s, AllowedIP: %s", resp.Endpoint, resp.SeekerAllowedIP)
 
-	// 5. Configure Local Interface
+	now := time.Now().Unix()
+	clockOffset := resp.Timestamp - now
+	
+	if clockOffset != 0 {
+		logger.P2P("Clock Drift Detected: %ds. Syncing timestamps...", clockOffset)
+	}
+
 	ifaceName := fmt.Sprintf("arkhamwg%d", len(m.activeConnections))
-	// Seekers don't need a specific listening port usually, but we assign one to be safe
 	listenPort := 51820 + len(m.activeConnections) 
 
 	wgClient, err := vpn.SetupInterface(ifaceName, privKey, listenPort)
@@ -62,38 +68,39 @@ func (m *Manager) RequestTunnel(ctx context.Context, remotePID peer.ID, seekerAu
 		return fmt.Errorf("invalid warden wg key: %w", err)
 	}
 
-	// 6. Add Warden Peer & Route Traffic
-	// We route 0.0.0.0/0 through the Warden
 	err = vpn.AddPeer(wgClient, ifaceName, wardenWgKey, []string{"0.0.0.0/0"}, resp.Endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to add warden peer: %w", err)
 	}
 
-	// 7. Setup System Routing
-	// The Seeker's "Gateway" is the Warden's tunnel IP (usually x.x.x.1 in a /24, but here P2P)
-	// We use the IP assigned to us by the warden as the source hint
 	if err := vpn.SetupSeekerRouting(ifaceName, resp.SeekerAllowedIP); err != nil {
 		return fmt.Errorf("failed to setup system routing: %w", err)
 	}
 
-	// 8. Track Connection
+	seekerAuthorityPK := solanago.MustPublicKeyFromBase58(seekerAuthority)
+	seekerPDA, _, _ := solana.GetSeekerPDA(seekerAuthorityPK)
+	connectionPDA, _, _ := solana.GetConnectionPDA(seekerPDA, wardenPDA)
+
 	conn := &WireGuardConnection{
 		SeekerPeerID:    m.host.ID(),
 		WardenPeerID:    remotePID,
-		SeekerAuthority: solanago.MustPublicKeyFromBase58(seekerAuthority),
+		SeekerAuthority: seekerAuthorityPK,
+		WardenAuthority: wardenAuthority,
 		WardenPDA:       wardenPDA,
+		ConnectionPDA:   connectionPDA,
 		Interface:       wgClient,
 		InterfaceName:   ifaceName,
 		LocalKey:        privKey,
 		RemoteKey:       wardenWgKey,
 		StopChan:        make(chan struct{}),
 		IsWarden:        false,
+		ClockOffset:     clockOffset,
 	}
 
 	m.mu.Lock()
 	m.activeConnections[remotePID] = conn
 	m.mu.Unlock()
 
-	log.Println("VPN: Tunnel established on", ifaceName)
+	logger.Success("VPN", "Tunnel established on %s", ifaceName)
 	return nil
 }

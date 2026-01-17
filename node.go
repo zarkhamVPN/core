@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"zarkham/core/logger"
 	"zarkham/core/p2p"
+	"zarkham/core/ryne"
 	"zarkham/core/solana"
 	"zarkham/core/storage"
 
@@ -23,6 +24,8 @@ type Config struct {
 	ConfigDir   string
 	RpcEndpoint string
 	ListenIP    string
+	P2PPort     int
+	SubmitTC    bool
 }
 
 type ZarkhamNode struct {
@@ -34,8 +37,8 @@ type ZarkhamNode struct {
 	}
 	solana *solana.Client
 	p2p    *p2p.Manager
+	ryne   *ryne.Service
 
-	// Caches for Snappy UI
 	seekerCache struct {
 		sync.RWMutex
 		registered bool
@@ -74,37 +77,38 @@ func (n *ZarkhamNode) Start(ctx context.Context, profile string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// 1. Load or Create Wallet
 	pk, err := n.storage.wallet.GetWallet(profile)
 	if err != nil {
-		log.Printf("Profile '%s' not found. Creating new wallet...", profile)
+		logger.Info("CORE", "Profile '%s' not found. Creating new wallet...", profile)
 		newPk := solanago.NewWallet().PrivateKey
 		if err := n.storage.wallet.SaveWallet(profile, newPk); err != nil {
 			return fmt.Errorf("failed to save new wallet: %w", err)
 		}
 		pk = newPk
-		log.Printf("Created new wallet for profile '%s'", profile)
+		logger.Success("CORE", "Created new wallet for profile '%s'", profile)
 	}
 
-	// 2. Initialize Solana Client
+	solana.InitGlobalAuth()
 	sc, err := solana.NewClient(n.config.RpcEndpoint, pk)
 	if err != nil {
 		return err
 	}
 	n.solana = sc
 
-	// 3. Initialize P2P Manager
 	pm := p2p.NewManager(n.storage.identity)
-	if err := pm.Start(ctx, n.config.ListenIP); err != nil {
+	if err := pm.Start(ctx, n.config.ListenIP, n.config.P2PPort); err != nil {
 		return err
 	}
-	pm.RegisterHandlers(n.solana) // Register handlers with Solana context
+	pm.RegisterHandlers(n.solana)
+	pm.SubmitTC = n.config.SubmitTC
 	n.p2p = pm
 
-	// Start Background Cache Refresher
+	n.ryne = ryne.NewService(n.p2p, n.solana, n.config.SubmitTC)
+	n.ryne.Start()
+
 	go n.backgroundCacheWorker(ctx, profile)
 
-	log.Println("Zarkham Node successfully started.")
+	logger.Success("CORE", "Zarkham Node successfully started.")
 	return nil
 }
 
@@ -112,7 +116,6 @@ func (n *ZarkhamNode) backgroundCacheWorker(ctx context.Context, profile string)
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	// Initial fetch
 	n.refreshCache(profile)
 
 	for {
@@ -165,6 +168,9 @@ func (n *ZarkhamNode) Stop() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	if n.ryne != nil {
+		n.ryne.Stop()
+	}
 	if n.p2p != nil {
 		n.p2p.Stop()
 	}
@@ -178,8 +184,6 @@ func (n *ZarkhamNode) Status() p2p.NodeStatus {
 	return n.p2p.Status()
 }
 
-// --- GUI API Bridges ---
-
 func (n *ZarkhamNode) GetSystemInfo() map[string]interface{} {
 	return map[string]interface{}{
 		"version": "1.0.0",
@@ -188,7 +192,7 @@ func (n *ZarkhamNode) GetSystemInfo() map[string]interface{} {
 
 func (n *ZarkhamNode) GetTelemetry() map[string]interface{} {
 	return map[string]interface{}{
-		"bandwidth_served": 0, // TODO: Implement in p2p
+		"bandwidth_served": 0,
 		"active_tunnels":   0,
 	}
 }
@@ -267,8 +271,6 @@ func (n *ZarkhamNode) GetSeekerStatus(ctx context.Context) (bool, *SeekerStatus,
 
 	status := *n.seekerCache.status
 	status.IsDisconnecting = n.isDisconnecting
-
-	// Simple check: Is the actual WireGuard interface up?
 	status.IsLocalLinkActive = n.p2p.IsTunnelInterfaceActive()
 
 	return n.seekerCache.registered, &status, nil
@@ -316,7 +318,6 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string, es
 		return fmt.Errorf("P2P manager not initialized")
 	}
 
-	// 1. Parse Multiaddr
 	ma, err := multiaddr.NewMultiaddr(multiaddrStr)
 	if err != nil {
 		return fmt.Errorf("invalid multiaddr: %w", err)
@@ -327,53 +328,51 @@ func (n *ZarkhamNode) ManualConnect(ctx context.Context, multiaddrStr string, es
 		return fmt.Errorf("failed to get peer info: %w", err)
 	}
 
-	// 2. Initialize On-Chain Connection (The "Ticket")
 	warden, err := n.solana.FetchWardenByPeerID(info.ID.String())
 	if err != nil {
 		return fmt.Errorf("failed to resolve warden authority from peer ID: %w", err)
 	}
 
-	// Check if connection already exists
 	seekerPDA, _, _ := solana.GetSeekerPDA(n.solana.Signer.PublicKey())
 	wardenPDA, _, _ := solana.GetWardenPDAForAuthority(warden.Authority)
 	connectionPDA, _, _ := solana.GetConnectionPDA(seekerPDA, wardenPDA)
 
 	_, err = n.solana.FetchConnectionAccount(connectionPDA)
 	if err == nil {
-		log.Printf("Connection account %s already exists. Skipping on-chain initialization.", connectionPDA)
+		logger.Solana("Connection account %s already exists. Skipping on-chain initialization.", connectionPDA)
 	} else if strings.Contains(err.Error(), "not found") {
-		log.Printf("Initializing on-chain connection with Warden %s...", warden.Authority)
+		logger.Solana("Initializing on-chain connection with Warden %s...", warden.Authority)
 		sig, err := n.solana.StartConnection(warden.Authority, estimatedMb)
 		if err != nil {
 			return fmt.Errorf("failed to initialize connection account: %w", err)
 		}
 		
-		log.Printf("Connection initialized. Sig: %s", sig)
-		log.Println("Waiting for transaction confirmation...")
+		logger.Solana("Connection initialized. Sig: %s", sig)
+		logger.Solana("Waiting for transaction confirmation...")
 		if err := n.solana.WaitForConfirmation(ctx, *sig); err != nil {
 			return fmt.Errorf("failed to confirm connection transaction: %w", err)
 		}
-		log.Println("Transaction confirmed. Proceeding with P2P handshake...")
+		logger.Solana("Transaction confirmed. Proceeding with P2P handshake...")
 	} else {
 		return fmt.Errorf("failed to check connection account status: %w", err)
 	}
 
-	// 3. Libp2p Connect
 	if err := n.p2p.Connect(ctx, multiaddrStr); err != nil {
 		return fmt.Errorf("libp2p connect failed: %w", err)
 	}
 
-	// 4. Request VPN Tunnel
 	seekerAuth := n.solana.Signer.PublicKey().String()
-	if err := n.p2p.RequestTunnel(ctx, info.ID, seekerAuth, wardenPDA); err != nil {
+	if err := n.p2p.RequestTunnel(ctx, info.ID, seekerAuth, wardenPDA, warden.Authority); err != nil {
 		return fmt.Errorf("vpn tunnel handshake failed: %w", err)
 	}
+
+	go n.refreshCache("seeker")
 
 	return nil
 }
 
 func (n *ZarkhamNode) DisconnectWarden(ctx context.Context, profile, wardenAuthority string) error {
-	log.Printf("Requesting disconnect from Warden: %s", wardenAuthority)
+	logger.Info("CORE", "Requesting disconnect from Warden: %s", wardenAuthority)
 
 	n.mu.Lock()
 	n.isDisconnecting = true
@@ -384,14 +383,15 @@ func (n *ZarkhamNode) DisconnectWarden(ctx context.Context, profile, wardenAutho
 		wardenAuth, _ = solanago.PublicKeyFromBase58(wardenAuthority)
 	}
 
-	// 1. Instant Local Cleanup
 	if !wardenAuth.IsZero() {
-		_ = n.p2p.CloseConnectionByWardenPDA(wardenAuth)
+		if err := n.p2p.CloseConnectionByWardenPDA(wardenAuth); err == nil {
+			logger.Success("VPN", "Local WireGuard tunnel closed successfully.")
+		}
 	} else {
+		logger.Warn("CORE", "No valid warden authority provided. Entering Cleanup Mode.")
 		n.p2p.CloseAllConnections()
 	}
 
-	// 2. Background Blockchain Cleanup
 	go func() {
 		defer func() {
 			n.mu.Lock()
@@ -401,10 +401,30 @@ func (n *ZarkhamNode) DisconnectWarden(ctx context.Context, profile, wardenAutho
 		}()
 
 		if !wardenAuth.IsZero() {
-			log.Println("Initiating background on-chain disconnect...")
+			logger.Solana("Initiating background on-chain disconnect...")
 			sig, err := n.solana.EndConnection(wardenAuth)
+			if err != nil {
+				logger.Error("SOLANA", "Background: On-chain EndConnection failed (PDA: %s): %v", wardenAuth, err)
+				return
+			}
+			
+			logger.Solana("Background: On-chain connection closing. Sig: %s", sig)
+			if err := n.solana.WaitForConfirmation(context.Background(), *sig); err != nil {
+				logger.Warn("SOLANA", "Background: Disconnect confirmation warning: %v", err)
+			} else {
+				logger.Success("SOLANA", "Background: Disconnect confirmed on-chain.")
+			}
+		} else {
+			logger.Solana("Scanning for lingering on-chain connections...")
+			conns, err := n.solana.FetchMyConnections("seeker")
 			if err == nil {
-				_ = n.solana.WaitForConfirmation(context.Background(), *sig)
+				for _, c := range conns {
+					logger.Warn("SOLANA", "Found lingering connection PDA %s. Closing...", c.PublicKey)
+					sig, err := n.solana.EndConnection(c.Account.Warden)
+					if err == nil {
+						logger.Success("SOLANA", "Lingering connection closed. Sig: %s", sig)
+					}
+				}
 			}
 		}
 	}()
@@ -413,7 +433,6 @@ func (n *ZarkhamNode) DisconnectWarden(ctx context.Context, profile, wardenAutho
 }
 
 func (n *ZarkhamNode) GetWalletBalance(ctx context.Context, profile string) (uint64, error) {
-
 	pk, err := n.storage.wallet.GetWallet(profile)
 	if err != nil {
 		return 0, fmt.Errorf("profile not found")
@@ -429,25 +448,21 @@ func (n *ZarkhamNode) GetWalletBalance(ctx context.Context, profile string) (uin
 }
 
 func (n *ZarkhamNode) TransferFunds(ctx context.Context, profile, recipientStr string, amount float64) (string, error) {
-	// 1. Get Wallet
 	pk, err := n.storage.wallet.GetWallet(profile)
 	if err != nil {
 		return "", err
 	}
 
-	// 2. Parse Recipient
 	recipient, err := solanago.PublicKeyFromBase58(recipientStr)
 	if err != nil {
 		return "", fmt.Errorf("invalid recipient address: %w", err)
 	}
 
-	// 3. Client
 	sc, err := solana.NewClient(n.config.RpcEndpoint, pk)
 	if err != nil {
 		return "", err
 	}
 
-	// 4. Send
 	lamports := uint64(amount * 1e9)
 	sig, err := sc.TransferSOL(recipient, lamports)
 	if err != nil {
@@ -471,19 +486,16 @@ func (n *ZarkhamNode) GetAddresses() (map[string]string, error) {
 }
 
 func (n *ZarkhamNode) RegisterWarden(ctx context.Context, profile string, stakeTokenStr string, stakeAmount float64) (string, error) {
-	// 1. Get Wallet
 	pk, err := n.storage.wallet.GetWallet(profile)
 	if err != nil {
 		return "", err
 	}
 
-	// 2. Client
 	sc, err := solana.NewClient(n.config.RpcEndpoint, pk)
 	if err != nil {
 		return "", err
 	}
 
-	// 3. Prepare Args
 	var token solana.StakeToken
 	var lamports uint64
 
@@ -499,7 +511,6 @@ func (n *ZarkhamNode) RegisterWarden(ctx context.Context, profile string, stakeT
 
 	peerID := n.p2p.Host().ID().String()
 
-	// REAL IP Resolution
 	var ipStr string
 	for _, addr := range n.p2p.Host().Addrs() {
 		if manet.IsPublicAddr(addr) {
@@ -512,7 +523,7 @@ func (n *ZarkhamNode) RegisterWarden(ctx context.Context, profile string, stakeT
 	}
 	if ipStr == "" {
 		ipStr = "0.0.0.0"
-		log.Println("WARNING: Could not determine public IP for registration. Using 0.0.0.0")
+		logger.Warn("CORE", "Could not determine public IP for registration. Using 0.0.0.0")
 	}
 
 	ipHash := sha256.Sum256([]byte(ipStr))
@@ -521,41 +532,26 @@ func (n *ZarkhamNode) RegisterWarden(ctx context.Context, profile string, stakeT
 	if err != nil {
 		return "", err
 	}
+	
+	go n.refreshCache(profile)
+	return sig.String(), nil
+}
 
-		return sig.String(), nil
-
+func (n *ZarkhamNode) GetHistory(ctx context.Context, profile string) (*solana.HistoryResult, error) {
+	pk, err := n.storage.wallet.GetWallet(profile)
+	if err != nil {
+		return nil, fmt.Errorf("profile not found")
 	}
 
-	
-
-	func (n *ZarkhamNode) GetHistory(ctx context.Context, profile string) (*solana.HistoryResult, error) {
-
-		pk, err := n.storage.wallet.GetWallet(profile)
-
-		if err != nil { return nil, fmt.Errorf("profile not found") }
-
-	
-
-		// Use existing client or create temp one
-
-		var sc *solana.Client
-
-		if n.solana != nil {
-
-			sc = n.solana
-
-		} else {
-
-			sc, err = solana.NewReadOnlyClient(n.config.RpcEndpoint)
-
-			if err != nil { return nil, err }
-
+	var sc *solana.Client
+	if n.solana != nil {
+		sc = n.solana
+	} else {
+		sc, err = solana.NewReadOnlyClient(n.config.RpcEndpoint)
+		if err != nil {
+			return nil, err
 		}
-
-	
-
-		return sc.GetHistory(pk.PublicKey())
-
 	}
 
-	
+	return sc.GetHistory(pk.PublicKey())
+}
